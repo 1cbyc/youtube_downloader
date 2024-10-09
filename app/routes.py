@@ -8,7 +8,7 @@ import os
 app = Flask(__name__)
 DOWNLOAD_FOLDER = "downloads/"
 
-# Create downloads directory if it doesn't exist
+# have to create downloads directory if it doesn't exist
 if not os.path.exists(DOWNLOAD_FOLDER):
     os.makedirs(DOWNLOAD_FOLDER)
     
