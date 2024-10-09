@@ -18,7 +18,7 @@ def clean_youtube_url(url):
     # regex to match yt video id patterns
     # match = re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+", url)
     # match = re.search(r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})', url)
-    match = re.search(r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})', url)
+    match = re.search(r'(https?://)?(www\.)?(youtube\.com/(watch\?v=|embed/|v/|.+\?v=)|youtu\.be/)([a-zA-Z0-9_-]{11})', url)
 
     
     if match:
