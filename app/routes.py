@@ -12,7 +12,7 @@ def clean_youtube_url(url):
     # regex to match yt video id patterns
     match = re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+", url)
     if match:
-        # will remove query parameters, only keep the base video link
+        # will remove query parameters, to only keep the base video link
         cleaned_url = url.split('?')[0]
         return cleaned_url
     return None
