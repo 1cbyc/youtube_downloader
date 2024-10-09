@@ -34,6 +34,9 @@ def index():
             # video = yt.streams.get_highest_resolution()
             
             video = yt.streams.filter(progressive=True, file_extension='mp4').first()  # will select the first available stream instead
+            if not video:
+                raise Exception("No suitable video stream found.")
+            
             video.download(output_path=DOWNLOAD_FOLDER)
             file_path = os.path.join(DOWNLOAD_FOLDER, yt.title + ".mp4")
             return send_file(file_path, as_attachment=True)
