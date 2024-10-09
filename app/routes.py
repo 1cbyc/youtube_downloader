@@ -5,6 +5,8 @@ from pytube import YouTube
 import os
 
 # i decided that i need to make the code automatically remove unecessary params in the yt video url
+DOWNLOAD_FOLDER = "downloads/"
+
 # Function to clean up the YouTube URL
 def clean_youtube_url(url):
     # Regex to match YouTube video ID patterns
@@ -15,7 +17,6 @@ def clean_youtube_url(url):
         return cleaned_url
     return None
 
-DOWNLOAD_FOLDER = "downloads/"
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
