@@ -18,11 +18,11 @@ def clean_youtube_url(url):
     match = re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+", url)
     
     if match:
-        # Extract video ID and form the standard YouTube URL
+        # will extract video ID and form the standard YouTube URL
         video_id = match.group(6)
         cleaned_url = f"https://www.youtube.com/watch?v={video_id}"
         # will remove query parameters, to only keep the base video link
-        cleaned_url = url.split('?')[0]
+        # cleaned_url = url.split('?')[0]
         return cleaned_url
     return None
 
