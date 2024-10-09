@@ -22,6 +22,8 @@ def clean_youtube_url(url):
 def index():
     if request.method == 'POST':
         video_url = request.form['video_url']
+        
+        
         try:
             yt = YouTube(video_url)
             video = yt.streams.get_highest_resolution()
