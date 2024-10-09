@@ -16,5 +16,6 @@ def index():
             file_path = os.path.join(DOWNLOAD_FOLDER, yt.title + ".mp4")
             return send_file(file_path, as_attachment=True)
         except Exception as e:
-x            return render_template('index.html', error=f"Error downloading video: {str(e)}")
+            # return render_template('index.html', error=str(e))
+            return render_template('index.html', error=f"Error downloading video: {str(e)}")
     return render_template('index.html')
