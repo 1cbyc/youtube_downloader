@@ -23,6 +23,7 @@ def index():
     if request.method == 'POST':
         video_url = request.form['video_url']
         
+        # decided to add a cleaned url process after receiving input now
         
         try:
             yt = YouTube(video_url)
