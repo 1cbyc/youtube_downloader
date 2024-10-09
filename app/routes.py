@@ -30,7 +30,7 @@ def index():
         
         try:
             yt = YouTube(video_url)
-            yt = YouTube(cleaned_url)  # Use the cleaned URL
+            yt = YouTube(cleaned_url)  # will use the cleaned URL instead of video_url
             video = yt.streams.get_highest_resolution()
             video.download(output_path=DOWNLOAD_FOLDER)
             file_path = os.path.join(DOWNLOAD_FOLDER, yt.title + ".mp4")
