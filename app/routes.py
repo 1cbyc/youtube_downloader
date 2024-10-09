@@ -5,6 +5,16 @@ from pytube import YouTube
 import os
 
 # i decided that i need to make the code automatically remove unecessary params in the yt video url
+# Function to clean up the YouTube URL
+def clean_youtube_url(url):
+    # Regex to match YouTube video ID patterns
+    match = re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+", url)
+    if match:
+        # Remove query parameters, only keep the base video link
+        cleaned_url = url.split('?')[0]
+        return cleaned_url
+    return None
+
 DOWNLOAD_FOLDER = "downloads/"
 
 @app.route('/', methods=['GET', 'POST'])
