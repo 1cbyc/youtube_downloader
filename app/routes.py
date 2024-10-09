@@ -4,6 +4,7 @@ from app import app
 from pytube import YouTube
 import os
 
+# i decided that i need to
 DOWNLOAD_FOLDER = "downloads/"
 
 @app.route('/', methods=['GET', 'POST'])
