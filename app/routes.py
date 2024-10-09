@@ -31,7 +31,8 @@ def index():
         try:
             # yt = YouTube(video_url) # assuming i did not clean the url
             yt = YouTube(cleaned_url)  # will use the cleaned URL instead of video_url
-            video = yt.streams.get_highest_resolution()
+            # video = yt.streams.get_highest_resolution()
+            video = yt.streams.filter(progressive=True, file_extension='mp4').first()  # Select the first available stream
             video.download(output_path=DOWNLOAD_FOLDER)
             file_path = os.path.join(DOWNLOAD_FOLDER, yt.title + ".mp4")
             return send_file(file_path, as_attachment=True)
