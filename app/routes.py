@@ -7,9 +7,9 @@ import os
 # i decided that i need to make the code automatically remove unecessary params in the yt video url
 DOWNLOAD_FOLDER = "downloads/"
 
-# Function to clean up the YouTube URL
+# the function to clean up the YouTube URL
 def clean_youtube_url(url):
-    # Regex to match YouTube video ID patterns
+    # regex to match YouTube video ID patterns
     match = re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+", url)
     if match:
         # Remove query parameters, only keep the base video link
