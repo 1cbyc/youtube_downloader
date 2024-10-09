@@ -5,6 +5,7 @@ from pytube import YouTube
 import os
 
 # i decided that i need to make the code automatically remove unecessary params in the yt video url
+app = Flask(__name__)
 DOWNLOAD_FOLDER = "downloads/"
 
 # the function to clean up the YouTube URL
