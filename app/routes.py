@@ -8,6 +8,10 @@ import os
 app = Flask(__name__)
 DOWNLOAD_FOLDER = "downloads/"
 
+# Create downloads directory if it doesn't exist
+if not os.path.exists(DOWNLOAD_FOLDER):
+    os.makedirs(DOWNLOAD_FOLDER)
+    
 # the function to clean up the YouTube URL
 def clean_youtube_url(url):
     # regex to match yt video id patterns
