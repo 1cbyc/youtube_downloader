@@ -29,7 +29,7 @@ def index():
             return render_template('index.html', error="Invalid YouTube URL.")
         
         try:
-            yt = YouTube(video_url)
+            # yt = YouTube(video_url) # assuming i did not clean the url
             yt = YouTube(cleaned_url)  # will use the cleaned URL instead of video_url
             video = yt.streams.get_highest_resolution()
             video.download(output_path=DOWNLOAD_FOLDER)
