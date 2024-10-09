@@ -23,8 +23,8 @@ def clean_youtube_url(url):
     
     if match:
         # will extract video ID and form the standard YouTube URL
-        video_id = match.group(6)
-        video_id = match.group(5)  # Change to match.group(5) for the ID
+        # video_id = match.group(6)
+        video_id = match.group(5)  # i changed to match.group(5) for the ID
         cleaned_url = f"https://www.youtube.com/watch?v={video_id}"
         # will remove query parameters, to only keep the base video link
         # cleaned_url = url.split('?')[0]
