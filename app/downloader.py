@@ -1,5 +1,9 @@
+# import os
+# from app.video_downloader import VideoDownloader
+
+import sys
 import os
-from app.video_downloader import VideoDownloader
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 def main():
     # to prompt the user for the video URL and download location
