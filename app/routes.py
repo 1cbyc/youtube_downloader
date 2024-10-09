@@ -32,8 +32,8 @@ def clean_youtube_url(url):
         return video_id
     else:
         raise ValueError("Invalid YouTube URL")
-        return cleaned_url
-    return None
+    #     return cleaned_url
+    # return None
 
 
 @app.route('/', methods=['GET', 'POST'])
