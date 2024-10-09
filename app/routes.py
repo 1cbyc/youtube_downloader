@@ -29,6 +29,9 @@ def clean_youtube_url(url):
         cleaned_url = f"https://www.youtube.com/watch?v={video_id}"
         # will remove query parameters, to only keep the base video link
         # cleaned_url = url.split('?')[0]
+        return video_id
+    else:
+        raise ValueError("Invalid YouTube URL")
         return cleaned_url
     return None
 
