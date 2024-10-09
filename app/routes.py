@@ -4,7 +4,7 @@ from app import app
 from pytube import YouTube
 import os
 
-# i decided that i need to make the code automatically remove unecessary params in the url
+# i decided that i need to make the code automatically remove unecessary params in the yt video url
 DOWNLOAD_FOLDER = "downloads/"
 
 @app.route('/', methods=['GET', 'POST'])
