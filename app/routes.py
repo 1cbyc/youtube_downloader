@@ -17,8 +17,8 @@ if not os.path.exists(DOWNLOAD_FOLDER):
 def clean_youtube_url(url):
     # regex to match yt video id patterns
     # match = re.match(r"(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+", url)
+    # match = re.search(r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})', url)
     match = re.search(r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})', url)
-        match = re.search(r'(https?://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})', url)
 
     
     if match:
