@@ -24,6 +24,9 @@ def index():
         video_url = request.form['video_url']
         
         # decided to add a cleaned url process after receiving input now
+        cleaned_url = clean_youtube_url(video_url)
+        if not cleaned_url:
+            return render_template('index.html', error="Invalid YouTube URL.")
         
         try:
             yt = YouTube(video_url)
