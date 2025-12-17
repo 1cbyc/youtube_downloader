@@ -97,28 +97,43 @@ class ProgressHook:
         self.job_id = job_id
         self.downloaded_bytes = 0
         self.total_bytes = None
+        self.last_update = 0
         
     def hook(self, d):
+        current_time = time.time()
+        # Update at least every 0.5 seconds for smoother progress
+        if current_time - self.last_update < 0.5 and d['status'] == 'downloading':
+            return
+        
+        self.last_update = current_time
+        
         if d['status'] == 'downloading':
-            if 'total_bytes' in d:
+            if 'total_bytes' in d and d['total_bytes']:
                 self.total_bytes = d['total_bytes']
             if 'downloaded_bytes' in d:
                 self.downloaded_bytes = d['downloaded_bytes']
             
-            if self.total_bytes:
-                progress = int((self.downloaded_bytes / self.total_bytes) * 100)
+            if self.total_bytes and self.total_bytes > 0:
+                progress = min(99, int((self.downloaded_bytes / self.total_bytes) * 100))
+            elif 'speed' in d and d['speed']:
+                # Estimate progress based on download speed (rough estimate)
+                progress = min(50, self.downloaded_bytes // 1000000)  # 1MB = ~1%
             else:
-                progress = min(50, self.downloaded_bytes // 1000000)  # Estimate based on downloaded MB
+                progress = min(10, self.downloaded_bytes // 5000000)  # Very rough estimate
             
             with queue_lock:
                 if self.job_id in download_status:
                     download_status[self.job_id]['progress'] = progress
                     download_status[self.job_id]['status'] = 'downloading'
+                    # Add speed info if available
+                    if 'speed' in d:
+                        speed_mb = d['speed'] / (1024 * 1024) if d['speed'] else 0
+                        download_status[self.job_id]['speed'] = f'{speed_mb:.2f} MB/s'
         elif d['status'] == 'finished':
             with queue_lock:
                 if self.job_id in download_status:
-                    download_status[self.job_id]['progress'] = 100
-                    download_status[self.job_id]['status'] = 'downloading'  # Will be set to completed after file check
+                    download_status[self.job_id]['progress'] = 99  # Almost done, will be 100 when file is found
+                    download_status[self.job_id]['status'] = 'downloading'
 
 
 def download_video(job_id, url, quality='best'):
@@ -247,6 +262,28 @@ def index():
     return render_template('index.html')
 
 
+def extract_video_title(job_id, url):
+    """Extract video title in background thread"""
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', url)
+            
+            with queue_lock:
+                if job_id in download_status:
+                    download_status[job_id]['title'] = title
+    except Exception as e:
+        with queue_lock:
+            if job_id in download_status:
+                download_status[job_id]['title'] = f'Extracting title... ({str(e)[:50]})'
+
+
 @app.route('/download', methods=['POST'])
 def add_to_queue():
     """Add video to download queue"""
@@ -268,13 +305,17 @@ def add_to_queue():
         download_status[job_id] = {
             'status': 'queued',
             'progress': 0,
-            'title': 'Waiting in queue...',
+            'title': 'Extracting video info...',
             'error': None,
             'filename': None,
             'url': url,
             'quality': quality,
             'added_at': datetime.now().isoformat()
         }
+    
+    # Extract title immediately in background
+    title_thread = threading.Thread(target=extract_video_title, args=(job_id, url), daemon=True)
+    title_thread.start()
     
     return jsonify({
         'success': True,
