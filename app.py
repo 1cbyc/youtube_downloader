@@ -733,10 +733,18 @@ def list_downloads():
             file_path = os.path.join(DOWNLOADS_DIR, file)
             # Only show completed files, exclude .part files (incomplete downloads)
             if os.path.isfile(file_path) and not file.endswith('.part'):
-                files.append({
-                    'name': file,
-                    'size': os.path.getsize(file_path)
-                })
+                try:
+                    file_stat = os.stat(file_path)
+                    files.append({
+                        'name': file,
+                        'size': file_stat.st_size,
+                        'modified': file_stat.st_mtime  # Add modification time for sorting
+                    })
+                except OSError:
+                    # Skip files that can't be accessed
+                    continue
+        # Sort by modification time (newest first)
+        files.sort(key=lambda x: x.get('modified', 0), reverse=True)
     return jsonify({'files': files})
 
 
