@@ -16,12 +16,25 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 def download_video(url, quality='best'):
     """Download video from YouTube URL"""
     try:
-        # Configure yt-dlp options
+        # Configure yt-dlp options with better YouTube compatibility
         ydl_opts = {
             'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' if quality == 'best' else 'worst',
             'quiet': False,
             'no_warnings': False,
+            # Better compatibility with YouTube's anti-bot measures
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],  # Try android first, fallback to web
+                }
+            },
+            # Add user agent to avoid detection
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            # Retry options
+            'retries': 3,
+            'fragment_retries': 3,
+            # Better error handling
+            'ignoreerrors': False,
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -32,10 +45,12 @@ def download_video(url, quality='best'):
             # Download the video
             ydl.download([url])
             
-            # Find the downloaded file
+            # Find the downloaded file - check for various extensions
             filename = None
+            safe_title = secure_filename(video_title[:50])
             for file in os.listdir(DOWNLOADS_DIR):
-                if file.startswith(secure_filename(video_title[:50])):
+                # Check if file starts with the safe title (handles various extensions)
+                if file.startswith(safe_title) or safe_title in file:
                     filename = file
                     break
             
@@ -52,10 +67,28 @@ def download_video(url, quality='best'):
                     'error': 'Could not find downloaded file'
                 }
                 
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        # Provide more user-friendly error messages
+        if 'HTTP Error 403' in error_msg or 'Forbidden' in error_msg:
+            return {
+                'success': False,
+                'error': 'YouTube blocked the download. Try again in a few minutes or use a different video.'
+            }
+        elif 'HTTP Error 400' in error_msg or 'Precondition check failed' in error_msg:
+            return {
+                'success': False,
+                'error': 'YouTube API error. The video may be unavailable or restricted. Please try updating yt-dlp.'
+            }
+        else:
+            return {
+                'success': False,
+                'error': f'Download error: {error_msg}'
+            }
     except Exception as e:
         return {
             'success': False,
-            'error': str(e)
+            'error': f'Unexpected error: {str(e)}'
         }
 
 
