@@ -161,12 +161,17 @@
                             statusIcon = '<i class="fas fa-clock"></i>';
                             statusClass = 'status-queued';
                             progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: 0%"></div></div>`;
+                            // Find position in queued list for prioritize buttons
+                            const queuedIndex = queuedJobs.findIndex(j => j.job_id === jobId);
+                            const canMoveUp = queuedIndex > 0;
+                            const canMoveDown = queuedIndex < queuedCount - 1;
+                            
                             actionButtons = `
                                 <div class="priority-buttons">
-                                    <button onclick="prioritizeDownload('${jobId}', 'up')" class="btn-priority" title="Move up (higher priority)" ${queuePos <= 1 ? 'disabled' : ''}>
+                                    <button onclick="prioritizeDownload('${jobId}', 'up')" class="btn-priority" title="Move up (higher priority)" ${!canMoveUp ? 'disabled' : ''}>
                                         <i class="fas fa-arrow-up"></i>
                                     </button>
-                                    <button onclick="prioritizeDownload('${jobId}', 'down')" class="btn-priority" title="Move down (lower priority)" ${queuePos >= queuedCount ? 'disabled' : ''}>
+                                    <button onclick="prioritizeDownload('${jobId}', 'down')" class="btn-priority" title="Move down (lower priority)" ${!canMoveDown ? 'disabled' : ''}>
                                         <i class="fas fa-arrow-down"></i>
                                     </button>
                                 </div>
