@@ -285,14 +285,42 @@ def download_video(job_id, url, quality='best'):
             error_msg = str(e)
             last_error = error_msg
             
-            if 'HTTP Error 403' in error_msg or 'HTTP Error 400' in error_msg or 'Precondition check failed' in error_msg:
-                continue
+            # Check for various YouTube blocking patterns
+            error_lower = error_msg.lower()
+            is_blocked = (
+                '403' in error_msg or 
+                'forbidden' in error_lower or
+                'http error 400' in error_lower or
+                'precondition check failed' in error_lower or
+                'sign in to confirm your age' in error_lower or
+                'video unavailable' in error_lower or
+                'private video' in error_lower or
+                'unable to extract' in error_lower and '403' in error_msg
+            )
+            
+            if is_blocked:
+                # Log which client failed for debugging
+                print(f"[DEBUG] Client '{client}' failed for {normalized_url}: {error_msg[:200]}")
+                continue  # Try next client
             else:
+                # Other errors - still try next client as fallback
+                print(f"[DEBUG] Client '{client}' error (non-blocking): {error_msg[:200]}")
                 continue
                 
         except Exception as e:
             error_msg = str(e)
             last_error = error_msg
+            error_lower = error_msg.lower()
+            is_blocked = (
+                '403' in error_msg or 
+                'forbidden' in error_lower or
+                'http error 400' in error_lower or
+                'precondition check failed' in error_lower
+            )
+            if is_blocked:
+                print(f"[DEBUG] Client '{client}' blocked for {normalized_url}: {error_msg[:200]}")
+            else:
+                print(f"[DEBUG] Client '{client}' exception: {error_msg[:200]}")
             continue
     
     # All clients failed
@@ -397,68 +425,61 @@ def normalize_youtube_url(url):
 
 
 def extract_video_title(job_id, url):
-    """Extract video title in background thread - optimized for speed"""
-    try:
-        # Normalize URL first
-        normalized_url = normalize_youtube_url(url)
-        
-        # Optimized options for fast title extraction
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,  # Faster - only get basic info, don't process formats
-            'skip_download': True,
-            'socket_timeout': 10,  # Shorter timeout for faster failure
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios'],  # iOS client is fastest for metadata
-                    'player_skip': ['webpage', 'configs', 'js'],  # Skip unnecessary processing
-                }
-            },
-            'http_headers': _get_client_headers('ios'),  # Use iOS headers for speed
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(normalized_url, download=False)
-            title = info.get('title', url)
-            
-            # Try to get source URL (may not be available in extract_flat mode)
-            source_url = None
-            try:
-                if 'url' in info:
-                    source_url = info['url']
-                elif 'requested_formats' in info and info['requested_formats']:
-                    source_url = info['requested_formats'][0].get('url', normalized_url)
-            except:
-                pass
-            
-            with queue_lock:
-                if job_id in download_status:
-                    download_status[job_id]['title'] = title
-                    if source_url:
-                        download_status[job_id]['source_url'] = source_url
-    except Exception as e:
-        # If fast extraction fails, try with web client as fallback
+    """Extract video title in background thread - optimized for speed with fallback"""
+    normalized_url = normalize_youtube_url(url)
+    
+    # Try multiple clients for title extraction (fallback if one fails)
+    clients = ['ios', 'android', 'web']
+    
+    for client in clients:
         try:
+            # Optimized options for fast title extraction
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'extract_flat': True,
+                'extract_flat': True,  # Faster - only get basic info, don't process formats
                 'skip_download': True,
-                'socket_timeout': 10,
+                'socket_timeout': 10,  # Shorter timeout for faster failure
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': [client],  # Try different clients
+                        'player_skip': ['webpage', 'configs', 'js'],  # Skip unnecessary processing
+                    }
+                },
+                'http_headers': _get_client_headers(client),  # Use appropriate headers
             }
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(normalized_url, download=False)
                 title = info.get('title', url)
+                
+                # Try to get source URL (may not be available in extract_flat mode)
+                source_url = None
+                try:
+                    if 'url' in info:
+                        source_url = info['url']
+                    elif 'requested_formats' in info and info['requested_formats']:
+                        source_url = info['requested_formats'][0].get('url', normalized_url)
+                except:
+                    pass
+                
                 with queue_lock:
                     if job_id in download_status:
                         download_status[job_id]['title'] = title
-        except:
-            with queue_lock:
-                if job_id in download_status:
-                    # Show URL if title extraction fails
-                    video_id = normalized_url.split('v=')[-1].split('&')[0] if 'v=' in normalized_url else 'Unknown'
-                    download_status[job_id]['title'] = f'Video {video_id[:11]}...'
+                        if source_url:
+                            download_status[job_id]['source_url'] = source_url
+                
+                # Success - break out of client loop
+                return
+                
+        except Exception as e:
+            # If this client failed, try next one
+            if client == clients[-1]:  # Last client failed
+                # Set a fallback title
+                with queue_lock:
+                    if job_id in download_status:
+                        download_status[job_id]['title'] = normalized_url
+            continue
 
 
 @app.route('/download', methods=['POST'])
