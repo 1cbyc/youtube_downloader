@@ -168,7 +168,8 @@ def download_video(job_id, url, quality='best'):
     # Check if paused before starting
     with queue_lock:
         if job_id in paused_jobs:
-            download_status[job_id]['status'] = 'paused'
+            if job_id in download_status:
+                download_status[job_id]['status'] = 'paused'
             return False
     
     with queue_lock:
@@ -182,7 +183,12 @@ def download_video(job_id, url, quality='best'):
                 'source_url': None
             }
         else:
-            download_status[job_id]['status'] = 'downloading'
+            # Double-check not paused before setting to downloading
+            if job_id not in paused_jobs:
+                download_status[job_id]['status'] = 'downloading'
+            else:
+                download_status[job_id]['status'] = 'paused'
+                return False
     
     client_priority = ['ios', 'android', 'tv', 'web']
     last_error = None
@@ -191,7 +197,8 @@ def download_video(job_id, url, quality='best'):
         # Check if paused before each client attempt
         with queue_lock:
             if job_id in paused_jobs:
-                download_status[job_id]['status'] = 'paused'
+                if job_id in download_status:
+                    download_status[job_id]['status'] = 'paused'
                 return False
         
         try:
@@ -199,7 +206,6 @@ def download_video(job_id, url, quality='best'):
             
             # Check if partial file exists for resume
             normalized_url = normalize_youtube_url(url)
-            expected_filename = None
             
             ydl_opts = {
                 'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
@@ -239,18 +245,26 @@ def download_video(job_id, url, quality='best'):
                     source_url = normalized_url
                 
                 with queue_lock:
+                    # Check again if paused during info extraction
+                    if job_id in paused_jobs:
+                        download_status[job_id]['status'] = 'paused'
+                        download_status[job_id]['title'] = video_title
+                        download_status[job_id]['source_url'] = source_url
+                        return False
                     download_status[job_id]['title'] = video_title
                     download_status[job_id]['progress'] = 10
                     download_status[job_id]['source_url'] = source_url
                 
-                # Check if paused before downloading
+                # Download the video with pause checks
+                # Note: yt-dlp doesn't support pause mid-download easily, 
+                # but we check before and after
+                ydl.download([normalized_url])
+                
+                # Check if paused after download completes
                 with queue_lock:
                     if job_id in paused_jobs:
                         download_status[job_id]['status'] = 'paused'
                         return False
-                
-                # Download the video
-                ydl.download([normalized_url])
                 
                 # Find the downloaded file
                 filename = _find_downloaded_file(video_title)
@@ -295,14 +309,16 @@ def process_queue():
     while True:
         with queue_lock:
             if download_queue and not processing:
-                processing = True
-                job = download_queue.pop(0)
-                job_id = job[0] if job else None
-                # Skip if job is paused
-                if job_id and job_id in paused_jobs:
-                    processing = False
-                    # Put job back at front of queue
-                    download_queue.insert(0, job)
+                # Filter out paused jobs from queue
+                active_jobs = [(jid, url, qual) for jid, url, qual in download_queue if jid not in paused_jobs]
+                
+                if active_jobs:
+                    processing = True
+                    job = active_jobs[0]
+                    job_id = job[0]
+                    # Remove from queue (will be re-added if needed)
+                    download_queue[:] = [(jid, url, qual) for jid, url, qual in download_queue if jid != job_id]
+                else:
                     job = None
             else:
                 job = None
@@ -310,6 +326,13 @@ def process_queue():
         if job:
             job_id, url, quality = job
             try:
+                # Double-check not paused before starting download
+                with queue_lock:
+                    if job_id in paused_jobs:
+                        download_status[job_id]['status'] = 'paused'
+                        processing = False
+                        continue
+                
                 download_video(job_id, url, quality)
             except KeyboardInterrupt:
                 # Handle pause signal
@@ -326,8 +349,11 @@ def process_queue():
                         download_status[job_id]['error'] = str(e)
             finally:
                 processing = False
+        else:
+            # Small delay when no jobs to process
+            time.sleep(0.5)
         
-        time.sleep(0.5)  # Check queue every 500ms
+        time.sleep(0.1)  # Check queue more frequently
 
 
 # Start queue processor thread
@@ -766,20 +792,41 @@ def open_folder():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@app.route('/open_file_in_folder/<filename>')
+@app.route('/open_file_in_folder/<path:filename>')
 def open_file_in_folder(filename):
     """Open a specific file's location in the file explorer"""
     import platform
     import subprocess
+    from urllib.parse import unquote
     
     try:
-        file_path = os.path.join(DOWNLOADS_DIR, secure_filename(filename))
+        # Decode URL-encoded filename
+        decoded_filename = unquote(filename)
+        # Use secure_filename to sanitize, but preserve the original for lookup
+        file_path = os.path.join(DOWNLOADS_DIR, decoded_filename)
+        
+        # Check if file exists with decoded name
         if not os.path.exists(file_path):
-            return jsonify({'success': False, 'error': 'File not found'}), 404
+            # Try with secure_filename as fallback
+            safe_filename = secure_filename(decoded_filename)
+            file_path = os.path.join(DOWNLOADS_DIR, safe_filename)
+            if not os.path.exists(file_path):
+                # List files to find a match (case-insensitive)
+                if os.path.exists(DOWNLOADS_DIR):
+                    for file in os.listdir(DOWNLOADS_DIR):
+                        if file.lower() == decoded_filename.lower() or file.lower() == safe_filename.lower():
+                            file_path = os.path.join(DOWNLOADS_DIR, file)
+                            break
+                    else:
+                        return jsonify({'success': False, 'error': f'File not found: {decoded_filename}'}), 404
+                else:
+                    return jsonify({'success': False, 'error': 'Downloads directory not found'}), 404
         
         if platform.system() == 'Windows':
             # Windows: open folder and select the file
-            subprocess.Popen(['explorer', '/select,', file_path])
+            # Use absolute path and ensure proper escaping
+            abs_path = os.path.abspath(file_path)
+            subprocess.Popen(['explorer', '/select,', abs_path])
         elif platform.system() == 'Darwin':  # macOS
             # macOS: reveal file in Finder
             subprocess.Popen(['open', '-R', file_path])
@@ -788,7 +835,7 @@ def open_file_in_folder(filename):
             subprocess.Popen(['xdg-open', DOWNLOADS_DIR])
         return jsonify({'success': True, 'message': 'File location opened'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': f'Error opening file: {str(e)}'}), 500
 
 
 if __name__ == '__main__':
