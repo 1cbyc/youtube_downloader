@@ -396,9 +396,21 @@ def extract_video_title(job_id, url):
             info = ydl.extract_info(normalized_url, download=False)
             title = info.get('title', url)
             
+            # Try to get source URL (may not be available in extract_flat mode)
+            source_url = None
+            try:
+                if 'url' in info:
+                    source_url = info['url']
+                elif 'requested_formats' in info and info['requested_formats']:
+                    source_url = info['requested_formats'][0].get('url', normalized_url)
+            except:
+                pass
+            
             with queue_lock:
                 if job_id in download_status:
                     download_status[job_id]['title'] = title
+                    if source_url:
+                        download_status[job_id]['source_url'] = source_url
     except Exception as e:
         # If fast extraction fails, try with web client as fallback
         try:
@@ -510,6 +522,9 @@ def pause_download(job_id):
         elif status == 'paused':
             return jsonify({'success': True, 'message': 'Download already paused'})
         
+        # Remove from queue if it's there (to prevent duplicates)
+        download_queue[:] = [(jid, url, qual) for jid, url, qual in download_queue if jid != job_id]
+        
         # Add to paused set
         paused_jobs.add(job_id)
         download_status[job_id]['status'] = 'paused'
@@ -531,6 +546,14 @@ def resume_download(job_id):
         if status == 'completed':
             return jsonify({'success': False, 'error': 'Download already completed'}), 400
         
+        # Check if job is already in queue (prevent duplicates)
+        already_in_queue = any(jid == job_id for jid, _, _ in download_queue)
+        if already_in_queue:
+            # Just remove from paused set and update status
+            paused_jobs.remove(job_id)
+            download_status[job_id]['status'] = 'queued'
+            return jsonify({'success': True, 'message': 'Download resumed (already in queue)'})
+        
         # Remove from paused set
         paused_jobs.remove(job_id)
         
@@ -544,7 +567,7 @@ def resume_download(job_id):
         # Normalize URL
         normalized_url = normalize_youtube_url(url)
         
-        # Re-add to queue
+        # Re-add to queue (only if not already there)
         download_queue.append((job_id, normalized_url, quality))
         download_status[job_id]['status'] = 'queued'
         download_status[job_id]['progress'] = download_status[job_id].get('progress', 0)
