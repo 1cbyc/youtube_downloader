@@ -150,6 +150,11 @@
                         const title = escapeHtml(job.title || 'Unknown');
                         const error = job.error ? escapeHtml(job.error) : null;
                         
+                        // Auto-download completed files
+                        if (status === 'completed') {
+                            autoDownloadCompleted(job);
+                        }
+                        
                         let statusIcon = '';
                         let statusClass = '';
                         let progressBar = '';
@@ -258,6 +263,29 @@
         let currentDownloadsHash = '';
         let currentFileCount = 0;
         
+        // Track completed jobs to auto-download
+        const completedJobs = new Set();
+        const autoDownloadedJobs = new Set();
+        
+        // Auto-download completed files
+        function autoDownloadCompleted(job) {
+            if (job.status === 'completed' && job.filename && !autoDownloadedJobs.has(job.job_id)) {
+                autoDownloadedJobs.add(job.job_id);
+                // Create a temporary link and click it to trigger download
+                const downloadUrl = `/download_file/${encodeURIComponent(job.filename)}`;
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = job.filename;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                // Show a notification
+                showMessage(`Downloading "${job.title || job.filename}" to your Downloads folder...`, 'success');
+            }
+        }
+        
         // Load downloads list
         async function loadDownloads(showLoading = false) {
             const downloadsList = document.getElementById('downloadsList');
@@ -353,10 +381,12 @@
                 const response = await fetch('/open_folder');
                 const data = await response.json();
                 if (!data.success) {
-                    showMessage('Could not open folder: ' + data.error, 'error');
+                    showMessage('Note: Files are saved on the server. Click "Download" on any file to save it to your computer\'s Downloads folder.', 'error');
+                } else {
+                    showMessage('Note: This opens the server folder. To save files on your computer, use the "Download" button on each file.', 'success');
                 }
             } catch (error) {
-                showMessage('Error opening folder: ' + error.message, 'error');
+                showMessage('Note: Files are saved on the server. Click "Download" on any file to save it to your computer\'s Downloads folder.', 'error');
             }
         });
         
@@ -545,6 +575,15 @@
             fetch('/queue')
                 .then(res => res.json())
                 .then(data => {
+                    // Check for newly completed jobs and auto-download them
+                    if (data.jobs) {
+                        data.jobs.forEach(job => {
+                            if (job.status === 'completed' && job.filename) {
+                                autoDownloadCompleted(job);
+                            }
+                        });
+                    }
+                    
                     const hasCompleted = data.jobs && data.jobs.some(job => job.status === 'completed' && !job.filename);
                     if (hasCompleted) {
                         // Force refresh if we detect completed downloads without filenames yet
