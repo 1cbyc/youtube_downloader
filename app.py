@@ -575,6 +575,99 @@ def resume_download(job_id):
         return jsonify({'success': True, 'message': 'Download resumed'})
 
 
+@app.route('/pause_all', methods=['POST'])
+def pause_all_downloads():
+    """Pause all active downloads"""
+    with queue_lock:
+        paused_count = 0
+        
+        # Pause all queued jobs
+        for job_id, _, _ in list(download_queue):
+            if job_id in download_status:
+                status = download_status[job_id]['status']
+                if status not in ['completed', 'failed', 'paused']:
+                    paused_jobs.add(job_id)
+                    download_status[job_id]['status'] = 'paused'
+                    paused_count += 1
+        
+        # Pause all downloading jobs
+        for job_id, status_info in download_status.items():
+            status = status_info['status']
+            if status == 'downloading' and job_id not in paused_jobs:
+                paused_jobs.add(job_id)
+                download_status[job_id]['status'] = 'paused'
+                paused_count += 1
+        
+        # Remove all paused jobs from queue
+        download_queue[:] = [(jid, url, qual) for jid, url, qual in download_queue if jid not in paused_jobs]
+        
+        return jsonify({'success': True, 'message': f'Paused {paused_count} download(s)'})
+
+
+@app.route('/resume_all', methods=['POST'])
+def resume_all_downloads():
+    """Resume all paused downloads"""
+    with queue_lock:
+        resumed_count = 0
+        
+        for job_id in list(paused_jobs):
+            if job_id in download_status:
+                status = download_status[job_id]['status']
+                if status == 'paused':
+                    # Check if already in queue
+                    already_in_queue = any(jid == job_id for jid, _, _ in download_queue)
+                    if not already_in_queue:
+                        url = download_status[job_id].get('url') or download_status[job_id].get('source_url')
+                        quality = download_status[job_id].get('quality', 'best')
+                        
+                        if url:
+                            normalized_url = normalize_youtube_url(url)
+                            download_queue.append((job_id, normalized_url, quality))
+                            download_status[job_id]['status'] = 'queued'
+                            resumed_count += 1
+                    
+                    paused_jobs.remove(job_id)
+        
+        return jsonify({'success': True, 'message': f'Resumed {resumed_count} download(s)'})
+
+
+@app.route('/prioritize/<job_id>/<direction>', methods=['POST'])
+def prioritize_download(job_id, direction):
+    """Move a download up or down in the queue (prioritize/deprioritize)"""
+    with queue_lock:
+        if job_id not in download_status:
+            return jsonify({'success': False, 'error': 'Job not found'}), 404
+        
+        # Find job in queue
+        queue_index = None
+        for i, (jid, _, _) in enumerate(download_queue):
+            if jid == job_id:
+                queue_index = i
+                break
+        
+        if queue_index is None:
+            return jsonify({'success': False, 'error': 'Job not in queue'}), 400
+        
+        if direction == 'up':
+            # Move up (higher priority)
+            if queue_index > 0:
+                download_queue[queue_index], download_queue[queue_index - 1] = \
+                    download_queue[queue_index - 1], download_queue[queue_index]
+                return jsonify({'success': True, 'message': 'Moved up in queue'})
+            else:
+                return jsonify({'success': False, 'error': 'Already at top of queue'}), 400
+        elif direction == 'down':
+            # Move down (lower priority)
+            if queue_index < len(download_queue) - 1:
+                download_queue[queue_index], download_queue[queue_index + 1] = \
+                    download_queue[queue_index + 1], download_queue[queue_index]
+                return jsonify({'success': True, 'message': 'Moved down in queue'})
+            else:
+                return jsonify({'success': False, 'error': 'Already at bottom of queue'}), 400
+        else:
+            return jsonify({'success': False, 'error': 'Invalid direction'}), 400
+
+
 @app.route('/source_url/<job_id>')
 def get_source_url(job_id):
     """Get the video source URL for a job"""
