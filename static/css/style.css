@@ -383,27 +383,87 @@ body {
     border-top: 1px solid rgba(0, 170, 255, 0.2);
 }
 
-.btn-refresh {
-    background: rgba(0, 170, 255, 0.1);
-    border: 1px solid rgba(0, 170, 255, 0.3);
+.downloads-actions {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 25px;
+}
+
+.btn-open-folder {
+    background: rgba(0, 170, 255, 0.15);
+    border: 1px solid rgba(0, 170, 255, 0.4);
     padding: 12px 24px;
     border-radius: 8px;
     cursor: pointer;
     font-size: 0.95em;
-    margin-bottom: 25px;
     transition: all 0.3s ease;
     color: #ffffff;
-    font-weight: 500;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 2px 8px rgba(0, 170, 255, 0.2);
+}
+
+.btn-open-folder:hover {
+    background: rgba(0, 170, 255, 0.25);
+    border-color: rgba(0, 170, 255, 0.6);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 170, 255, 0.3);
+}
+
+.btn-open-folder:active {
+    transform: translateY(0);
+}
+
+.btn-open-folder i {
+    transition: transform 0.3s ease;
+}
+
+.btn-open-folder:hover i {
+    transform: scale(1.1);
+}
+
+.downloads-actions {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 25px;
+    flex-wrap: wrap;
+}
+
+.btn-refresh {
+    background: rgba(0, 170, 255, 0.15);
+    border: 1px solid rgba(0, 170, 255, 0.4);
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.95em;
+    transition: all 0.3s ease;
+    color: #ffffff;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 2px 8px rgba(0, 170, 255, 0.2);
 }
 
 .btn-refresh:hover {
-    background: rgba(0, 170, 255, 0.2);
-    border-color: rgba(0, 170, 255, 0.5);
-    transform: translateY(-1px);
+    background: rgba(0, 170, 255, 0.25);
+    border-color: rgba(0, 170, 255, 0.6);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 170, 255, 0.3);
+}
+
+.btn-refresh:active {
+    transform: translateY(0);
 }
 
 .btn-refresh i {
-    margin-right: 8px;
+    transition: transform 0.3s ease;
+}
+
+.btn-refresh:hover i {
+    transform: rotate(180deg);
 }
 
 .downloads-list {
