@@ -541,6 +541,18 @@
         updateInterval = setInterval(() => {
             updateQueue();
             // Also refresh downloads list periodically to catch completed downloads
+            // Check if any downloads completed and force refresh if needed
+            fetch('/queue')
+                .then(res => res.json())
+                .then(data => {
+                    const hasCompleted = data.jobs && data.jobs.some(job => job.status === 'completed' && !job.filename);
+                    if (hasCompleted) {
+                        // Force refresh if we detect completed downloads without filenames yet
+                        currentDownloadsHash = '';
+                        currentFileCount = 0;
+                    }
+                })
+                .catch(() => {});
             // Pass false to avoid showing "Loading..." on each update
             loadDownloads(false);
         }, 2000); // Refresh downloads list every 2 seconds
