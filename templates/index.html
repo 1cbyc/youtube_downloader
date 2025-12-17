@@ -4,21 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube Video Downloader</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎬 YouTube Video Downloader</h1>
+            <h1><i class="fas fa-video"></i> YouTube Video Downloader</h1>
             <p class="subtitle">Download your kids' favorite videos easily!</p>
         </div>
 
         <div class="main-content">
             <div class="download-section">
-                <h2>Download a Video</h2>
+                <h2><i class="fas fa-cloud-download-alt"></i> Download a Video</h2>
                 <form id="downloadForm" class="download-form">
                     <div class="input-group">
-                        <label for="videoUrl">YouTube URL:</label>
+                        <label for="videoUrl"><i class="fas fa-link"></i> YouTube URL:</label>
                         <input 
                             type="text" 
                             id="videoUrl" 
@@ -29,7 +30,7 @@
                     </div>
                     
                     <div class="input-group">
-                        <label for="quality">Video Quality:</label>
+                        <label for="quality"><i class="fas fa-hd-video"></i> Video Quality:</label>
                         <select id="quality" name="quality">
                             <option value="best">Best Quality</option>
                             <option value="worst">Lower Quality (Smaller File)</option>
@@ -37,17 +38,23 @@
                     </div>
 
                     <button type="submit" class="btn-download" id="downloadBtn">
-                        <span class="btn-text">Download Video</span>
-                        <span class="btn-loader" style="display: none;">⏳ Downloading...</span>
+                        <span class="btn-text"><i class="fas fa-plus"></i> Add to Queue</span>
                     </button>
                 </form>
 
                 <div id="message" class="message" style="display: none;"></div>
             </div>
 
+            <div class="queue-section">
+                <h2><i class="fas fa-tasks"></i> Download Queue</h2>
+                <div id="queueList" class="queue-list">
+                    <p class="loading-text">Loading queue...</p>
+                </div>
+            </div>
+
             <div class="downloads-section">
-                <h2>Downloaded Videos</h2>
-                <button id="refreshBtn" class="btn-refresh">🔄 Refresh List</button>
+                <h2><i class="fas fa-folder-open"></i> Downloaded Videos</h2>
+                <button id="refreshBtn" class="btn-refresh"><i class="fas fa-sync-alt"></i> Refresh List</button>
                 <div id="downloadsList" class="downloads-list">
                     <p class="loading-text">Loading...</p>
                 </div>
@@ -56,13 +63,15 @@
     </div>
 
     <script>
+        let updateInterval;
+        const activeJobs = new Set();
+
         // Download form handler
         document.getElementById('downloadForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
             const url = document.getElementById('videoUrl').value.trim();
             const quality = document.getElementById('quality').value;
-            const downloadBtn = document.getElementById('downloadBtn');
             const messageDiv = document.getElementById('message');
             
             if (!url) {
@@ -70,10 +79,6 @@
                 return;
             }
             
-            // Show loading state
-            downloadBtn.disabled = true;
-            downloadBtn.querySelector('.btn-text').style.display = 'none';
-            downloadBtn.querySelector('.btn-loader').style.display = 'inline';
             messageDiv.style.display = 'none';
             
             try {
@@ -88,18 +93,15 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    showMessage(data.message, 'success');
+                    showMessage(`Video added to queue (Position: ${data.queue_position})`, 'success');
                     document.getElementById('videoUrl').value = '';
-                    loadDownloads();
+                    activeJobs.add(data.job_id);
+                    updateQueue();
                 } else {
                     showMessage('Error: ' + data.error, 'error');
                 }
             } catch (error) {
                 showMessage('Error: ' + error.message, 'error');
-            } finally {
-                downloadBtn.disabled = false;
-                downloadBtn.querySelector('.btn-text').style.display = 'inline';
-                downloadBtn.querySelector('.btn-loader').style.display = 'none';
             }
         });
         
@@ -113,7 +115,70 @@
             if (type === 'success') {
                 setTimeout(() => {
                     messageDiv.style.display = 'none';
-                }, 5000);
+                }, 3000);
+            }
+        }
+        
+        // Update queue display
+        async function updateQueue() {
+            try {
+                const response = await fetch('/queue');
+                const data = await response.json();
+                
+                const queueList = document.getElementById('queueList');
+                
+                if (data.jobs && data.jobs.length > 0) {
+                    queueList.innerHTML = data.jobs.map(job => {
+                        const jobId = job.job_id || 'unknown';
+                        const status = job.status || 'unknown';
+                        const progress = job.progress || 0;
+                        const title = escapeHtml(job.title || 'Unknown');
+                        const error = job.error ? escapeHtml(job.error) : null;
+                        
+                        let statusIcon = '';
+                        let statusClass = '';
+                        let progressBar = '';
+                        
+                        if (status === 'queued') {
+                            statusIcon = '<i class="fas fa-clock"></i>';
+                            statusClass = 'status-queued';
+                            progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: 0%"></div></div>`;
+                        } else if (status === 'downloading') {
+                            statusIcon = '<i class="fas fa-spinner fa-spin"></i>';
+                            statusClass = 'status-downloading';
+                            progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div><span class="progress-text">${progress}%</span>`;
+                        } else if (status === 'completed') {
+                            statusIcon = '<i class="fas fa-check-circle"></i>';
+                            statusClass = 'status-completed';
+                            progressBar = `<div class="progress-bar"><div class="progress-fill progress-complete" style="width: 100%"></div></div><span class="progress-text">100%</span>`;
+                        } else if (status === 'failed') {
+                            statusIcon = '<i class="fas fa-exclamation-circle"></i>';
+                            statusClass = 'status-failed';
+                            progressBar = `<div class="error-message">${error || 'Download failed'}</div>`;
+                        }
+                        
+                        const queuePos = job.queue_position ? `#${job.queue_position} ` : '';
+                        
+                        return `
+                            <div class="queue-item ${statusClass}" data-job-id="${jobId}">
+                                <div class="queue-item-header">
+                                    <span class="queue-status">${statusIcon} ${queuePos}${status.charAt(0).toUpperCase() + status.slice(1)}</span>
+                                    ${status === 'completed' && job.filename ? `
+                                        <a href="/download_file/${encodeURIComponent(job.filename)}" class="btn-download-file-small" download>
+                                            <i class="fas fa-download"></i> Download
+                                        </a>
+                                    ` : ''}
+                                </div>
+                                <div class="queue-item-title">${title}</div>
+                                ${progressBar}
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    queueList.innerHTML = '<p class="no-downloads">No downloads in queue. Add a video above to get started!</p>';
+                }
+            } catch (error) {
+                console.error('Error updating queue:', error);
             }
         }
         
@@ -136,7 +201,7 @@
                                     <span class="file-size">${sizeMB} MB</span>
                                 </div>
                                 <a href="/download_file/${encodeURIComponent(file.name)}" class="btn-download-file" download>
-                                    ⬇️ Download
+                                    <i class="fas fa-download"></i> Download
                                 </a>
                             </div>
                         `;
@@ -159,9 +224,19 @@
         // Refresh button handler
         document.getElementById('refreshBtn').addEventListener('click', loadDownloads);
         
-        // Load downloads on page load
+        // Auto-update queue every 1 second
+        updateInterval = setInterval(updateQueue, 1000);
+        
+        // Load initial data
+        updateQueue();
         loadDownloads();
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (updateInterval) {
+                clearInterval(updateInterval);
+            }
+        });
     </script>
 </body>
 </html>
-
