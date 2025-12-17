@@ -163,3 +163,4 @@ cython_debug/
 
 # 1cbyc
 *.ps1
+*.md
