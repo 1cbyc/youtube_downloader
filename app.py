@@ -361,21 +361,30 @@ def process_queue():
         with queue_lock:
             if download_queue and not processing:
                 # Filter out paused jobs from queue
-                active_jobs = [(jid, url, qual) for jid, url, qual in download_queue if jid not in paused_jobs]
+                # Handle both old format (3 items) and new format (4 items with client_ip)
+                active_jobs = []
+                for item in download_queue:
+                    if len(item) == 3:
+                        jid, url, qual = item
+                        client_ip = None
+                    else:
+                        jid, url, qual, client_ip = item
+                    if jid not in paused_jobs:
+                        active_jobs.append((jid, url, qual, client_ip))
                 
                 if active_jobs:
                     processing = True
                     job = active_jobs[0]
                     job_id = job[0]
                     # Remove from queue (will be re-added if needed)
-                    download_queue[:] = [(jid, url, qual) for jid, url, qual in download_queue if jid != job_id]
+                    download_queue[:] = [item for item in download_queue if item[0] != job_id]
                 else:
                     job = None
             else:
                 job = None
         
         if job:
-            job_id, url, quality = job
+            job_id, url, quality, client_ip = job
             try:
                 # Double-check not paused before starting download
                 with queue_lock:
@@ -384,7 +393,7 @@ def process_queue():
                         processing = False
                         continue
                 
-                download_video(job_id, url, quality)
+                download_video(job_id, url, quality, client_ip)
             except KeyboardInterrupt:
                 # Handle pause signal
                 with queue_lock:
