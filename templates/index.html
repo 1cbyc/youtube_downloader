@@ -139,8 +139,9 @@
                 const queueList = document.getElementById('queueList');
                 
                 if (data.jobs && data.jobs.length > 0) {
-                    // Count queued items for prioritize button logic
-                    const queuedCount = data.jobs.filter(j => j.status === 'queued').length;
+                    // Get queued items for prioritize button logic
+                    const queuedJobs = data.jobs.filter(j => j.status === 'queued');
+                    const queuedCount = queuedJobs.length;
                     
                     queueList.innerHTML = data.jobs.map(job => {
                         const jobId = job.job_id || 'unknown';
@@ -164,7 +165,7 @@
                             // Find position in queued list for prioritize buttons
                             const queuedIndex = queuedJobs.findIndex(j => j.job_id === jobId);
                             const canMoveUp = queuedIndex > 0;
-                            const canMoveDown = queuedIndex < queuedCount - 1;
+                            const canMoveDown = queuedIndex >= 0 && queuedIndex < queuedCount - 1;
                             
                             actionButtons = `
                                 <div class="priority-buttons">
