@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Video Downloader</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎬 YouTube Video Downloader</h1>
+            <p class="subtitle">Download your kids' favorite videos easily!</p>
+        </div>
+
+        <div class="main-content">
+            <div class="download-section">
+                <h2>Download a Video</h2>
+                <form id="downloadForm" class="download-form">
+                    <div class="input-group">
+                        <label for="videoUrl">YouTube URL:</label>
+                        <input 
+                            type="text" 
+                            id="videoUrl" 
+                            name="url" 
+                            placeholder="https://www.youtube.com/watch?v=..." 
+                            required
+                        >
+                    </div>
+                    
+                    <div class="input-group">
+                        <label for="quality">Video Quality:</label>
+                        <select id="quality" name="quality">
+                            <option value="best">Best Quality</option>
+                            <option value="worst">Lower Quality (Smaller File)</option>
+                        </select>
+                    </div>
+
+                    <button type="submit" class="btn-download" id="downloadBtn">
+                        <span class="btn-text">Download Video</span>
+                        <span class="btn-loader" style="display: none;">⏳ Downloading...</span>
+                    </button>
+                </form>
+
+                <div id="message" class="message" style="display: none;"></div>
+            </div>
+
+            <div class="downloads-section">
+                <h2>Downloaded Videos</h2>
+                <button id="refreshBtn" class="btn-refresh">🔄 Refresh List</button>
+                <div id="downloadsList" class="downloads-list">
+                    <p class="loading-text">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Download form handler
+        document.getElementById('downloadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const url = document.getElementById('videoUrl').value.trim();
+            const quality = document.getElementById('quality').value;
+            const downloadBtn = document.getElementById('downloadBtn');
+            const messageDiv = document.getElementById('message');
+            
+            if (!url) {
+                showMessage('Please enter a YouTube URL', 'error');
+                return;
+            }
+            
+            // Show loading state
+            downloadBtn.disabled = true;
+            downloadBtn.querySelector('.btn-text').style.display = 'none';
+            downloadBtn.querySelector('.btn-loader').style.display = 'inline';
+            messageDiv.style.display = 'none';
+            
+            try {
+                const response = await fetch('/download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url, quality })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage(data.message, 'success');
+                    document.getElementById('videoUrl').value = '';
+                    loadDownloads();
+                } else {
+                    showMessage('Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showMessage('Error: ' + error.message, 'error');
+            } finally {
+                downloadBtn.disabled = false;
+                downloadBtn.querySelector('.btn-text').style.display = 'inline';
+                downloadBtn.querySelector('.btn-loader').style.display = 'none';
+            }
+        });
+        
+        // Show message
+        function showMessage(text, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.textContent = text;
+            messageDiv.className = 'message message-' + type;
+            messageDiv.style.display = 'block';
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    messageDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+        
+        // Load downloads list
+        async function loadDownloads() {
+            const downloadsList = document.getElementById('downloadsList');
+            downloadsList.innerHTML = '<p class="loading-text">Loading...</p>';
+            
+            try {
+                const response = await fetch('/list_downloads');
+                const data = await response.json();
+                
+                if (data.files && data.files.length > 0) {
+                    downloadsList.innerHTML = data.files.map(file => {
+                        const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+                        return `
+                            <div class="download-item">
+                                <div class="file-info">
+                                    <span class="file-name">${escapeHtml(file.name)}</span>
+                                    <span class="file-size">${sizeMB} MB</span>
+                                </div>
+                                <a href="/download_file/${encodeURIComponent(file.name)}" class="btn-download-file" download>
+                                    ⬇️ Download
+                                </a>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    downloadsList.innerHTML = '<p class="no-downloads">No videos downloaded yet.</p>';
+                }
+            } catch (error) {
+                downloadsList.innerHTML = '<p class="error-text">Error loading downloads.</p>';
+            }
+        }
+        
+        // Escape HTML to prevent XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // Refresh button handler
+        document.getElementById('refreshBtn').addEventListener('click', loadDownloads);
+        
+        // Load downloads on page load
+        loadDownloads();
+    </script>
+</body>
+</html>
+
