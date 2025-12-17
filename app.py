@@ -166,12 +166,26 @@ class ProgressHook:
                     download_status[self.job_id]['status'] = 'downloading'
 
 
-def download_video(job_id, url, quality='best'):
+def download_video(job_id, url, quality='best', client_ip=None):
     """
     Download video from YouTube URL using multiple fallback strategies.
     Updates download_status dict with progress.
     Supports pause/resume and network interruption recovery.
+    
+    Args:
+        job_id: Unique job identifier
+        url: YouTube URL to download
+        quality: Video quality ('best' or 'worst')
+        client_ip: IP address of the client requesting the download
     """
+    # Get client-specific downloads folder
+    if client_ip:
+        downloads_dir = get_client_downloads_folder(client_ip)
+    else:
+        # Fallback to default folder for backward compatibility
+        downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
+        os.makedirs(downloads_dir, exist_ok=True)
+    
     # Check if paused before starting
     with queue_lock:
         if job_id in paused_jobs:
@@ -187,7 +201,9 @@ def download_video(job_id, url, quality='best'):
                 'title': 'Extracting video info...',
                 'error': None,
                 'filename': None,
-                'source_url': None
+                'source_url': None,
+                'client_ip': client_ip,
+                'downloads_dir': downloads_dir
             }
         else:
             # Double-check not paused before setting to downloading
@@ -215,7 +231,7 @@ def download_video(job_id, url, quality='best'):
             normalized_url = normalize_youtube_url(url)
             
             ydl_opts = {
-                'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
+                'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
                 'format': _get_format_selector(quality),
                 'extractor_args': {
                     'youtube': {
@@ -274,7 +290,7 @@ def download_video(job_id, url, quality='best'):
                         return False
                 
                 # Find the downloaded file
-                filename = _find_downloaded_file(video_title)
+                filename = _find_downloaded_file(video_title, downloads_dir)
                 
                 if filename:
                     with queue_lock:
@@ -501,6 +517,9 @@ def add_to_queue():
     - https://www.youtube.com/embed/VIDEO_ID
     - And more...
     """
+    # Get client IP from request
+    client_ip = request.remote_addr
+    
     data = request.get_json()
     url = data.get('url', '').strip()
     quality = data.get('quality', 'best')
@@ -519,7 +538,7 @@ def add_to_queue():
     job_id = str(uuid.uuid4())
     
     with queue_lock:
-        download_queue.append((job_id, normalized_url, quality))
+        download_queue.append((job_id, normalized_url, quality, client_ip))
         download_status[job_id] = {
             'status': 'queued',
             'progress': 0,
@@ -528,6 +547,7 @@ def add_to_queue():
             'filename': None,
             'url': url,  # Keep original URL for display
             'quality': quality,
+            'client_ip': client_ip,
             'added_at': datetime.now().isoformat()
         }
     
