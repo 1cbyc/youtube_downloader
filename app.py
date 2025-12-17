@@ -39,7 +39,9 @@ DOWNLOADS_DIR = get_downloads_folder()
 
 # Download queue and status tracking
 download_queue = []
-download_status = {}  # {job_id: {'status': 'queued'|'downloading'|'completed'|'failed', 'progress': 0-100, 'title': '', 'error': ''}}
+download_status = {}  # {job_id: {'status': 'queued'|'downloading'|'paused'|'completed'|'failed', 'progress': 0-100, 'title': '', 'error': '', 'source_url': ''}}
+paused_jobs = set()  # Set of job_ids that are paused
+active_downloads = {}  # {job_id: thread} - track active download threads for cancellation
 queue_lock = threading.Lock()
 processing = False
 
@@ -161,22 +163,43 @@ def download_video(job_id, url, quality='best'):
     """
     Download video from YouTube URL using multiple fallback strategies.
     Updates download_status dict with progress.
+    Supports pause/resume and network interruption recovery.
     """
+    # Check if paused before starting
     with queue_lock:
-        download_status[job_id] = {
-            'status': 'downloading',
-            'progress': 0,
-            'title': 'Extracting video info...',
-            'error': None,
-            'filename': None
-        }
+        if job_id in paused_jobs:
+            download_status[job_id]['status'] = 'paused'
+            return False
+    
+    with queue_lock:
+        if job_id not in download_status:
+            download_status[job_id] = {
+                'status': 'downloading',
+                'progress': 0,
+                'title': 'Extracting video info...',
+                'error': None,
+                'filename': None,
+                'source_url': None
+            }
+        else:
+            download_status[job_id]['status'] = 'downloading'
     
     client_priority = ['ios', 'android', 'tv', 'web']
     last_error = None
     
     for client in client_priority:
+        # Check if paused before each client attempt
+        with queue_lock:
+            if job_id in paused_jobs:
+                download_status[job_id]['status'] = 'paused'
+                return False
+        
         try:
             progress_hook = ProgressHook(job_id)
+            
+            # Check if partial file exists for resume
+            normalized_url = normalize_youtube_url(url)
+            expected_filename = None
             
             ydl_opts = {
                 'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
@@ -198,19 +221,33 @@ def download_video(job_id, url, quality='best'):
                 'hls_prefer_native': True,
                 'extract_flat': False,
                 'progress_hooks': [progress_hook.hook],
+                'continue_dl': True,  # Enable resume for interrupted downloads
             }
-            
-            # Normalize URL before processing
-            normalized_url = normalize_youtube_url(url)
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Extract info first
                 info = ydl.extract_info(normalized_url, download=False)
                 video_title = info.get('title', 'video')
                 
+                # Get source URL (direct video URL if available)
+                source_url = None
+                if 'url' in info:
+                    source_url = info['url']
+                elif 'requested_formats' in info and info['requested_formats']:
+                    source_url = info['requested_formats'][0].get('url', normalized_url)
+                else:
+                    source_url = normalized_url
+                
                 with queue_lock:
                     download_status[job_id]['title'] = video_title
                     download_status[job_id]['progress'] = 10
+                    download_status[job_id]['source_url'] = source_url
+                
+                # Check if paused before downloading
+                with queue_lock:
+                    if job_id in paused_jobs:
+                        download_status[job_id]['status'] = 'paused'
+                        return False
                 
                 # Download the video
                 ydl.download([normalized_url])
@@ -260,6 +297,13 @@ def process_queue():
             if download_queue and not processing:
                 processing = True
                 job = download_queue.pop(0)
+                job_id = job[0] if job else None
+                # Skip if job is paused
+                if job_id and job_id in paused_jobs:
+                    processing = False
+                    # Put job back at front of queue
+                    download_queue.insert(0, job)
+                    job = None
             else:
                 job = None
         
@@ -267,10 +311,19 @@ def process_queue():
             job_id, url, quality = job
             try:
                 download_video(job_id, url, quality)
+            except KeyboardInterrupt:
+                # Handle pause signal
+                with queue_lock:
+                    if job_id in paused_jobs:
+                        download_status[job_id]['status'] = 'paused'
+                    else:
+                        download_status[job_id]['status'] = 'failed'
+                        download_status[job_id]['error'] = 'Download interrupted'
             except Exception as e:
                 with queue_lock:
-                    download_status[job_id]['status'] = 'failed'
-                    download_status[job_id]['error'] = str(e)
+                    if job_id not in paused_jobs:
+                        download_status[job_id]['status'] = 'failed'
+                        download_status[job_id]['error'] = str(e)
             finally:
                 processing = False
         
@@ -442,6 +495,84 @@ def get_status(job_id):
             return jsonify({'error': 'Job not found'}), 404
 
 
+@app.route('/pause/<job_id>', methods=['POST'])
+def pause_download(job_id):
+    """Pause a download"""
+    with queue_lock:
+        if job_id not in download_status:
+            return jsonify({'success': False, 'error': 'Job not found'}), 404
+        
+        status = download_status[job_id]['status']
+        if status == 'completed':
+            return jsonify({'success': False, 'error': 'Download already completed'}), 400
+        elif status == 'failed':
+            return jsonify({'success': False, 'error': 'Download already failed'}), 400
+        elif status == 'paused':
+            return jsonify({'success': True, 'message': 'Download already paused'})
+        
+        # Add to paused set
+        paused_jobs.add(job_id)
+        download_status[job_id]['status'] = 'paused'
+        
+        return jsonify({'success': True, 'message': 'Download paused'})
+
+
+@app.route('/resume/<job_id>', methods=['POST'])
+def resume_download(job_id):
+    """Resume a paused download"""
+    with queue_lock:
+        if job_id not in download_status:
+            return jsonify({'success': False, 'error': 'Job not found'}), 404
+        
+        if job_id not in paused_jobs:
+            return jsonify({'success': False, 'error': 'Download is not paused'}), 400
+        
+        status = download_status[job_id]['status']
+        if status == 'completed':
+            return jsonify({'success': False, 'error': 'Download already completed'}), 400
+        
+        # Remove from paused set
+        paused_jobs.remove(job_id)
+        
+        # Get job details
+        url = download_status[job_id].get('url') or download_status[job_id].get('source_url')
+        quality = download_status[job_id].get('quality', 'best')
+        
+        if not url:
+            return jsonify({'success': False, 'error': 'Cannot resume: URL not found'}), 400
+        
+        # Normalize URL
+        normalized_url = normalize_youtube_url(url)
+        
+        # Re-add to queue
+        download_queue.append((job_id, normalized_url, quality))
+        download_status[job_id]['status'] = 'queued'
+        download_status[job_id]['progress'] = download_status[job_id].get('progress', 0)
+        
+        return jsonify({'success': True, 'message': 'Download resumed'})
+
+
+@app.route('/source_url/<job_id>')
+def get_source_url(job_id):
+    """Get the video source URL for a job"""
+    with queue_lock:
+        if job_id not in download_status:
+            return jsonify({'success': False, 'error': 'Job not found'}), 404
+        
+        source_url = download_status[job_id].get('source_url')
+        original_url = download_status[job_id].get('url')
+        
+        if not source_url and not original_url:
+            return jsonify({'success': False, 'error': 'Source URL not available yet'}), 404
+        
+        return jsonify({
+            'success': True,
+            'source_url': source_url or original_url,
+            'original_url': original_url,
+            'title': download_status[job_id].get('title', 'Unknown')
+        })
+
+
 @app.route('/queue')
 def get_queue():
     """Get all download jobs status"""
@@ -452,13 +583,17 @@ def get_queue():
             if job_id in download_status:
                 job_status = download_status[job_id].copy()
                 job_status['queue_position'] = i + 1
+                job_status['job_id'] = job_id
                 jobs.append(job_status)
         
-        # Add active/processing jobs
+        # Add active/processing/paused jobs
         for job_id, status in download_status.items():
-            if status['status'] in ['downloading', 'completed', 'failed']:
+            if status['status'] in ['downloading', 'completed', 'failed', 'paused']:
                 job_status = status.copy()
                 job_status['job_id'] = job_id
+                # Add queue position for paused jobs that are still in queue
+                if status['status'] == 'paused' and job_id not in [j[0] for j in download_queue]:
+                    job_status['queue_position'] = 0
                 jobs.append(job_status)
         
         return jsonify({'jobs': jobs})
