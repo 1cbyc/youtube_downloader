@@ -13,9 +13,29 @@ from datetime import datetime
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# Create downloads directory if it doesn't exist
-DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), 'downloads', 'kids')
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+# Get the user's Downloads folder (works on Windows, macOS, and Linux)
+def get_downloads_folder():
+    """Get the user's Downloads folder path"""
+    import platform
+    home = os.path.expanduser('~')
+    
+    if platform.system() == 'Windows':
+        # Windows: C:\Users\Username\Downloads
+        downloads = os.path.join(home, 'Downloads')
+    elif platform.system() == 'Darwin':  # macOS
+        # macOS: /Users/Username/Downloads
+        downloads = os.path.join(home, 'Downloads')
+    else:  # Linux
+        # Linux: /home/username/Downloads
+        downloads = os.path.join(home, 'Downloads')
+    
+    # Create kids subfolder in Downloads
+    kids_folder = os.path.join(downloads, 'kids')
+    os.makedirs(kids_folder, exist_ok=True)
+    return kids_folder
+
+# Create downloads directory in user's Downloads folder
+DOWNLOADS_DIR = get_downloads_folder()
 
 # Download queue and status tracking
 download_queue = []
@@ -296,15 +316,25 @@ def normalize_youtube_url(url):
 
 
 def extract_video_title(job_id, url):
-    """Extract video title in background thread"""
+    """Extract video title in background thread - optimized for speed"""
     try:
         # Normalize URL first
         normalized_url = normalize_youtube_url(url)
         
+        # Optimized options for fast title extraction
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': False,
+            'extract_flat': True,  # Faster - only get basic info, don't process formats
+            'skip_download': True,
+            'socket_timeout': 10,  # Shorter timeout for faster failure
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios'],  # iOS client is fastest for metadata
+                    'player_skip': ['webpage', 'configs', 'js'],  # Skip unnecessary processing
+                }
+            },
+            'http_headers': _get_client_headers('ios'),  # Use iOS headers for speed
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -315,9 +345,27 @@ def extract_video_title(job_id, url):
                 if job_id in download_status:
                     download_status[job_id]['title'] = title
     except Exception as e:
-        with queue_lock:
-            if job_id in download_status:
-                download_status[job_id]['title'] = f'Extracting title... ({str(e)[:50]})'
+        # If fast extraction fails, try with web client as fallback
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'skip_download': True,
+                'socket_timeout': 10,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(normalized_url, download=False)
+                title = info.get('title', url)
+                with queue_lock:
+                    if job_id in download_status:
+                        download_status[job_id]['title'] = title
+        except:
+            with queue_lock:
+                if job_id in download_status:
+                    # Show URL if title extraction fails
+                    video_id = normalized_url.split('v=')[-1].split('&')[0] if 'v=' in normalized_url else 'Unknown'
+                    download_status[job_id]['title'] = f'Video {video_id[:11]}...'
 
 
 @app.route('/download', methods=['POST'])
