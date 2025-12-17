@@ -142,23 +142,66 @@
                         let statusClass = '';
                         let progressBar = '';
                         
+                        let actionButtons = '';
+                        
                         if (status === 'queued') {
                             statusIcon = '<i class="fas fa-clock"></i>';
                             statusClass = 'status-queued';
                             progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: 0%"></div></div>`;
+                            actionButtons = `
+                                <button onclick="pauseDownload('${jobId}')" class="btn-pause-small" title="Pause download">
+                                    <i class="fas fa-pause"></i> Pause
+                                </button>
+                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
+                                    <i class="fas fa-link"></i> Source
+                                </button>
+                            `;
                         } else if (status === 'downloading') {
                             statusIcon = '<i class="fas fa-spinner fa-spin"></i>';
                             statusClass = 'status-downloading';
                             const speed = job.speed ? ` • ${job.speed}` : '';
                             progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div><span class="progress-text">${progress}%${speed}</span>`;
+                            actionButtons = `
+                                <button onclick="pauseDownload('${jobId}')" class="btn-pause-small" title="Pause download">
+                                    <i class="fas fa-pause"></i> Pause
+                                </button>
+                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
+                                    <i class="fas fa-link"></i> Source
+                                </button>
+                            `;
+                        } else if (status === 'paused') {
+                            statusIcon = '<i class="fas fa-pause-circle"></i>';
+                            statusClass = 'status-paused';
+                            progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div><span class="progress-text">Paused at ${progress}%</span>`;
+                            actionButtons = `
+                                <button onclick="resumeDownload('${jobId}')" class="btn-resume-small" title="Resume download">
+                                    <i class="fas fa-play"></i> Resume
+                                </button>
+                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
+                                    <i class="fas fa-link"></i> Source
+                                </button>
+                            `;
                         } else if (status === 'completed') {
                             statusIcon = '<i class="fas fa-check-circle"></i>';
                             statusClass = 'status-completed';
                             progressBar = `<div class="progress-bar"><div class="progress-fill progress-complete" style="width: 100%"></div></div><span class="progress-text">100%</span>`;
+                            actionButtons = job.filename ? `
+                                <a href="/download_file/${encodeURIComponent(job.filename)}" class="btn-download-file-small" download>
+                                    <i class="fas fa-download"></i> Download
+                                </a>
+                            ` : '';
                         } else if (status === 'failed') {
                             statusIcon = '<i class="fas fa-exclamation-circle"></i>';
                             statusClass = 'status-failed';
                             progressBar = `<div class="error-message">${error || 'Download failed'}</div>`;
+                            actionButtons = `
+                                <button onclick="resumeDownload('${jobId}')" class="btn-resume-small" title="Retry download">
+                                    <i class="fas fa-redo"></i> Retry
+                                </button>
+                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
+                                    <i class="fas fa-link"></i> Source
+                                </button>
+                            `;
                         }
                         
                         const queuePos = job.queue_position ? `#${job.queue_position} ` : '';
@@ -167,11 +210,9 @@
                             <div class="queue-item ${statusClass}" data-job-id="${jobId}">
                                 <div class="queue-item-header">
                                     <span class="queue-status">${statusIcon} ${queuePos}${status.charAt(0).toUpperCase() + status.slice(1)}</span>
-                                    ${status === 'completed' && job.filename ? `
-                                        <a href="/download_file/${encodeURIComponent(job.filename)}" class="btn-download-file-small" download>
-                                            <i class="fas fa-download"></i> Download
-                                        </a>
-                                    ` : ''}
+                                    <div class="queue-item-actions">
+                                        ${actionButtons}
+                                    </div>
                                 </div>
                                 <div class="queue-item-title">${title}</div>
                                 ${progressBar}
@@ -286,6 +327,90 @@
         
         // Make function globally available
         window.openFileInFolder = openFileInFolder;
+        
+        // Track pending operations to prevent duplicate requests
+        const pendingOperations = new Set();
+        
+        // Pause download
+        async function pauseDownload(jobId) {
+            // Prevent duplicate requests
+            if (pendingOperations.has(`pause-${jobId}`)) {
+                return;
+            }
+            
+            pendingOperations.add(`pause-${jobId}`);
+            try {
+                const response = await fetch(`/pause/${jobId}`, { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showMessage('Download paused', 'success');
+                    updateQueue(); // Refresh queue display
+                } else {
+                    showMessage('Error: ' + (data.error || 'Failed to pause'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error pausing download: ' + error.message, 'error');
+            } finally {
+                pendingOperations.delete(`pause-${jobId}`);
+            }
+        }
+        
+        // Resume download
+        async function resumeDownload(jobId) {
+            // Prevent duplicate requests
+            if (pendingOperations.has(`resume-${jobId}`)) {
+                return;
+            }
+            
+            pendingOperations.add(`resume-${jobId}`);
+            try {
+                const response = await fetch(`/resume/${jobId}`, { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showMessage('Download resumed', 'success');
+                    updateQueue(); // Refresh queue display
+                } else {
+                    showMessage('Error: ' + (data.error || 'Failed to resume'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error resuming download: ' + error.message, 'error');
+            } finally {
+                pendingOperations.delete(`resume-${jobId}`);
+            }
+        }
+        
+        // Get source URL
+        async function getSourceUrl(jobId) {
+            try {
+                const response = await fetch(`/source_url/${jobId}`);
+                const data = await response.json();
+                if (data.success) {
+                    // Copy to clipboard
+                    await navigator.clipboard.writeText(data.source_url);
+                    showMessage(`Source URL copied to clipboard! (${data.title})`, 'success');
+                    
+                    // Also show in a prompt for easy access
+                    const userChoice = confirm(
+                        `Source URL copied to clipboard!\n\n` +
+                        `Title: ${data.title}\n` +
+                        `URL: ${data.source_url}\n\n` +
+                        `Click OK to open in new tab, or Cancel to close.`
+                    );
+                    if (userChoice) {
+                        window.open(data.source_url, '_blank');
+                    }
+                } else {
+                    showMessage('Error: ' + (data.error || 'Source URL not available yet'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error getting source URL: ' + error.message, 'error');
+            }
+        }
+        
+        // Make functions globally available
+        window.pauseDownload = pauseDownload;
+        window.resumeDownload = resumeDownload;
+        window.getSourceUrl = getSourceUrl;
         
         // Auto-update queue every 500ms for smoother progress updates
         updateInterval = setInterval(() => {
