@@ -11,14 +11,33 @@ I needed a simple web app to download YouTube videos that would be perfect for m
 
 ## Installation
 
-1. Install Python dependencies:
+1. Create a virtual environment:
+```bash
+python -m venv venv
+```
+
+2. Activate the virtual environment:
+   - On Windows (PowerShell):
+   ```bash
+   .\venv\Scripts\Activate.ps1
+   ```
+   - On Windows (Command Prompt):
+   ```bash
+   venv\Scripts\activate
+   ```
+   - On macOS/Linux:
+   ```bash
+   source venv/bin/activate
+   ```
+
+3. Install Python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-1. Start the application:
+1. Make sure the virtual environment is activated, then start the application:
 ```bash
 python app.py
 ```
@@ -46,7 +65,7 @@ http://localhost:5000
 
 ## Notes
 
-- Downloaded videos are saved in the `downloads` folder
+- Downloaded videos are saved in the `downloads/kids` folder
 - The application runs on port 5000 by default
 - Make sure you have enough disk space for downloaded videos
 
