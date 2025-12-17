@@ -100,33 +100,45 @@ public class YoutubeDownloadService
     {
         var normalizedUrl = NormalizeYoutubeUrl(url);
         
-        try
+        // Try with iOS client first (fastest and most reliable)
+        var clients = new[] { "ios", "android", "web" };
+        
+        foreach (var client in clients)
         {
-            var process = new Process
+            try
             {
-                StartInfo = new ProcessStartInfo
+                var arguments = $"--flat-playlist --skip-download --print title " +
+                    $"--extractor-args \"youtube:player_client={client}\" " +
+                    $"--user-agent \"{GetClientUserAgent(client)}\" " +
+                    $"--socket-timeout 10 \"{normalizedUrl}\"";
+
+                var process = new Process
                 {
-                    FileName = _ytDlpPath ?? "yt-dlp",
-                    Arguments = $"--flat-playlist --skip-download --print title \"{normalizedUrl}\"",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = _ytDlpPath ?? "yt-dlp",
+                        Arguments = arguments,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.Start();
+                var output = await process.StandardOutput.ReadToEndAsync();
+                await process.WaitForExitAsync();
+
+                if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
+                {
+                    return output.Trim();
                 }
-            };
-
-            process.Start();
-            var output = await process.StandardOutput.ReadToEndAsync();
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
-            {
-                return output.Trim();
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error extracting video title");
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error extracting video title with client {Client}, trying next", client);
+                continue;
+            }
         }
 
         return null;
@@ -135,98 +147,225 @@ public class YoutubeDownloadService
     public async Task<bool> DownloadVideoAsync(string jobId, string url, string quality, 
         DownloadQueueService queueService, CancellationToken cancellationToken)
     {
+        // Check if paused before starting
+        if (queueService.IsPaused(jobId))
+        {
+            var status = queueService.GetStatusDictionary();
+            if (status.TryGetValue(jobId, out var job))
+            {
+                job.Status = "paused";
+            }
+            return false;
+        }
+
         var normalizedUrl = NormalizeYoutubeUrl(url);
         var formatSelector = quality == "best" 
             ? "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
             : "worst[ext=mp4]/worst";
 
-        try
+        var jobStatus = queueService.GetStatusDictionary();
+        if (!jobStatus.TryGetValue(jobId, out var initialJob))
         {
-            var status = queueService.GetStatusDictionary();
-            if (status.TryGetValue(jobId, out var job))
+            jobStatus[jobId] = new DownloadJob
             {
-                job.Status = "downloading";
-                job.Progress = 0;
+                JobId = jobId,
+                Status = "downloading",
+                Progress = 0,
+                Title = "Extracting video info...",
+                Url = normalizedUrl,
+                Quality = quality
+            };
+        }
+        else
+        {
+            if (!queueService.IsPaused(jobId))
+            {
+                initialJob.Status = "downloading";
+            }
+            else
+            {
+                initialJob.Status = "paused";
+                return false;
+            }
+        }
+
+        // Try multiple clients in sequence (multi-client fallback strategy)
+        var clientPriority = new[] { "ios", "android", "tv", "web" };
+        string? lastError = null;
+
+        foreach (var client in clientPriority)
+        {
+            // Check if paused before each client attempt
+            if (queueService.IsPaused(jobId))
+            {
+                if (jobStatus.TryGetValue(jobId, out var pausedJob))
+                {
+                    pausedJob.Status = "paused";
+                }
+                return false;
             }
 
-            var outputTemplate = Path.Combine(_downloadsDir, "%(title)s.%(ext)s");
-            var arguments = $"--no-warnings --progress --newline --output \"{outputTemplate}\" --format \"{formatSelector}\" \"{normalizedUrl}\"";
-
-            var process = new Process
+            try
             {
-                StartInfo = new ProcessStartInfo
+                var outputTemplate = Path.Combine(_downloadsDir, "%(title)s.%(ext)s");
+                
+                // Build yt-dlp arguments with client-specific options
+                var arguments = $"--no-warnings --progress --newline " +
+                    $"--output \"{outputTemplate}\" " +
+                    $"--format \"{formatSelector}\" " +
+                    $"--extractor-args \"youtube:player_client={client};player_skip=webpage,configs\" " +
+                    $"--user-agent \"{GetClientUserAgent(client)}\" " +
+                    $"--retries 5 --fragment-retries 5 --file-access-retries 3 " +
+                    $"--socket-timeout 30 --hls-prefer-native " +
+                    $"--continue \"{normalizedUrl}\"";
+
+                var process = new Process
                 {
-                    FileName = _ytDlpPath ?? "yt-dlp",
-                    Arguments = arguments,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = _ytDlpPath ?? "yt-dlp",
+                        Arguments = arguments,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    }
+                };
 
-            process.Start();
+                process.Start();
 
-            // Read progress output
-            string? line;
-            while ((line = await process.StandardOutput.ReadLineAsync()) != null)
-            {
-                if (cancellationToken.IsCancellationRequested)
+                // Read progress output
+                string? line;
+                string? errorOutput = null;
+                
+                // Read stderr for error messages
+                _ = Task.Run(async () =>
+                {
+                    while ((line = await process.StandardError.ReadLineAsync()) != null)
+                    {
+                        errorOutput = (errorOutput ?? "") + line + "\n";
+                    }
+                });
+
+                while ((line = await process.StandardOutput.ReadLineAsync()) != null)
+                {
+                if (cancellationToken.IsCancellationRequested || queueService.IsPaused(jobId))
                 {
                     process.Kill();
-                    if (status.TryGetValue(jobId, out var job2))
+                    if (jobStatus.TryGetValue(jobId, out var cancelledJob))
                     {
-                        job2.Status = "paused";
+                        cancelledJob.Status = "paused";
                     }
                     return false;
                 }
 
-                // Parse progress (yt-dlp format: [download] X.X% of Y.YMiB at Z.ZMiB/s ETA HH:MM:SS)
-                var progressMatch = Regex.Match(line, @"\[download\]\s+(\d+\.?\d*)%");
-                if (progressMatch.Success && status.TryGetValue(jobId, out var job3))
-                {
-                    if (int.TryParse(progressMatch.Groups[1].Value.Split('.')[0], out var progress))
+                    // Parse progress (yt-dlp format: [download] X.X% of Y.YMiB at Z.ZMiB/s ETA HH:MM:SS)
+                    var progressMatch = Regex.Match(line, @"\[download\]\s+(\d+\.?\d*)%");
+                    if (progressMatch.Success && jobStatus.TryGetValue(jobId, out var progressJob))
                     {
-                        job3.Progress = Math.Min(99, progress);
+                        if (int.TryParse(progressMatch.Groups[1].Value.Split('.')[0], out var progress))
+                        {
+                            progressJob.Progress = Math.Min(99, progress);
+                        }
+
+                        // Extract speed
+                        var speedMatch = Regex.Match(line, @"at\s+(\d+\.?\d*\w+)/s");
+                        if (speedMatch.Success)
+                        {
+                            progressJob.Speed = speedMatch.Groups[1].Value + "/s";
+                        }
                     }
 
-                    // Extract speed
-                    var speedMatch = Regex.Match(line, @"at\s+(\d+\.?\d*\w+)/s");
-                    if (speedMatch.Success)
+                    // Extract title if available
+                    if (line.Contains("title") && jobStatus.TryGetValue(jobId, out var titleJob))
                     {
-                        job3.Speed = speedMatch.Groups[1].Value + "/s";
+                        if (string.IsNullOrEmpty(titleJob.Title) || titleJob.Title == "Extracting video info...")
+                        {
+                            var titleMatch = Regex.Match(line, @"\[info\]\s+(.+)");
+                            if (titleMatch.Success)
+                            {
+                                titleJob.Title = titleMatch.Groups[1].Value.Trim();
+                            }
+                        }
+                    }
+                }
+
+                await process.WaitForExitAsync();
+
+                // Check if paused after download completes
+                if (queueService.IsPaused(jobId))
+                {
+                    if (jobStatus.TryGetValue(jobId, out var pausedJob2))
+                    {
+                        pausedJob2.Status = "paused";
+                    }
+                    return false;
+                }
+
+                if (process.ExitCode == 0)
+                {
+                    // Find downloaded file
+                    var filename = FindDownloadedFile(normalizedUrl);
+                    if (!string.IsNullOrEmpty(filename) && jobStatus.TryGetValue(jobId, out var completedJob))
+                    {
+                        completedJob.Status = "completed";
+                        completedJob.Progress = 100;
+                        completedJob.Filename = filename;
+                        completedJob.CompletedAt = DateTime.Now;
+                        return true;
+                    }
+                }
+                else
+                {
+                    // Check error output for specific error types that should trigger fallback
+                    var errorMsg = errorOutput ?? "";
+                    if (errorMsg.Contains("HTTP Error 403") || 
+                        errorMsg.Contains("HTTP Error 400") || 
+                        errorMsg.Contains("Precondition check failed") ||
+                        errorMsg.Contains("403") ||
+                        errorMsg.Contains("Forbidden"))
+                    {
+                        // This client failed, try next one
+                        lastError = errorMsg;
+                        _logger.LogWarning("Client {Client} failed for {Url}, trying next client. Error: {Error}", 
+                            client, normalizedUrl, errorMsg.Substring(0, Math.Min(200, errorMsg.Length)));
+                        continue;
+                    }
+                    else
+                    {
+                        // Other error, but still try next client
+                        lastError = errorMsg;
+                        continue;
                     }
                 }
             }
-
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode == 0)
+            catch (Exception ex)
             {
-                // Find downloaded file
-                var filename = FindDownloadedFile(normalizedUrl);
-                if (!string.IsNullOrEmpty(filename) && status.TryGetValue(jobId, out var job4))
-                {
-                    job4.Status = "completed";
-                    job4.Progress = 100;
-                    job4.Filename = filename;
-                    job4.CompletedAt = DateTime.Now;
-                    return true;
-                }
+                lastError = ex.Message;
+                _logger.LogWarning(ex, "Error with client {Client} for {Url}, trying next client", client, normalizedUrl);
+                continue;
             }
         }
-        catch (Exception ex)
+
+        // All clients failed
+        if (status.TryGetValue(jobId, out var failedJob))
         {
-            _logger.LogError(ex, "Error downloading video");
-            var status = queueService.GetStatusDictionary();
-            if (status.TryGetValue(jobId, out var job))
-            {
-                job.Status = "failed";
-                job.Error = ex.Message;
-            }
+            failedJob.Status = "failed";
+            failedJob.Error = lastError ?? "All client fallbacks failed";
         }
-
         return false;
+    }
+
+    private string GetClientUserAgent(string client)
+    {
+        return client switch
+        {
+            "ios" => "com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)",
+            "android" => "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip",
+            "tv" => "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+            "web" => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            _ => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        };
     }
 
     private string? FindDownloadedFile(string url)
