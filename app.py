@@ -681,8 +681,16 @@ def pause_all_downloads():
                 download_status[job_id]['status'] = 'paused'
                 paused_count += 1
         
-        # Remove all paused jobs from queue
-        download_queue[:] = [(jid, url, qual) for jid, url, qual in download_queue if jid not in paused_jobs]
+        # Remove all paused jobs from queue (handle both old and new format)
+        new_queue = []
+        for item in download_queue:
+            if len(item) == 3:
+                jid, url, qual = item
+            else:
+                jid, url, qual, _ = item
+            if jid not in paused_jobs:
+                new_queue.append(item)
+        download_queue[:] = new_queue
         
         return jsonify({'success': True, 'message': f'Paused {paused_count} download(s)'})
 
@@ -698,14 +706,15 @@ def resume_all_downloads():
                 status = download_status[job_id]['status']
                 if status == 'paused':
                     # Check if already in queue
-                    already_in_queue = any(jid == job_id for jid, _, _ in download_queue)
+                    already_in_queue = any(jid == job_id for jid, _, _, *_ in download_queue)
                     if not already_in_queue:
                         url = download_status[job_id].get('url') or download_status[job_id].get('source_url')
                         quality = download_status[job_id].get('quality', 'best')
+                        client_ip = download_status[job_id].get('client_ip')
                         
                         if url:
                             normalized_url = normalize_youtube_url(url)
-                            download_queue.append((job_id, normalized_url, quality))
+                            download_queue.append((job_id, normalized_url, quality, client_ip))
                             download_status[job_id]['status'] = 'queued'
                             resumed_count += 1
                     
@@ -721,9 +730,10 @@ def prioritize_download(job_id, direction):
         if job_id not in download_status:
             return jsonify({'success': False, 'error': 'Job not found'}), 404
         
-        # Find job in queue
+        # Find job in queue (handle both old and new format)
         queue_index = None
-        for i, (jid, _, _) in enumerate(download_queue):
+        for i, item in enumerate(download_queue):
+            jid = item[0]
             if jid == job_id:
                 queue_index = i
                 break
@@ -776,18 +786,26 @@ def get_source_url(job_id):
 def get_queue():
     """Get all download jobs status"""
     with queue_lock:
-        jobs = []
-        # Add queued jobs
-        for i, (job_id, url, quality) in enumerate(download_queue):
-            if job_id in download_status:
-                job_status = download_status[job_id].copy()
-                job_status['queue_position'] = i + 1
-                job_status['job_id'] = job_id
-                jobs.append(job_status)
+        # Get client IP from request to filter jobs
+        client_ip = request.remote_addr
         
-        # Add active/processing/paused jobs
+        jobs = []
+        # Add queued jobs (only for this client)
+        for i, item in enumerate(download_queue):
+            job_id = item[0]
+            if job_id in download_status:
+                # Only show jobs for this client
+                job_client_ip = download_status[job_id].get('client_ip')
+                if job_client_ip == client_ip:
+                    job_status = download_status[job_id].copy()
+                    job_status['queue_position'] = i + 1
+                    job_status['job_id'] = job_id
+                    jobs.append(job_status)
+        
+        # Add active/processing/paused jobs (only for this client)
         for job_id, status in download_status.items():
-            if status['status'] in ['downloading', 'completed', 'failed', 'paused']:
+            job_client_ip = status.get('client_ip')
+            if job_client_ip == client_ip and status['status'] in ['downloading', 'completed', 'failed', 'paused']:
                 job_status = status.copy()
                 job_status['job_id'] = job_id
                 # Add queue position for paused jobs that are still in queue
@@ -800,8 +818,10 @@ def get_queue():
 
 @app.route('/download_file/<filename>')
 def download_file(filename):
-    """Serve downloaded file"""
-    file_path = os.path.join(DOWNLOADS_DIR, secure_filename(filename))
+    """Serve downloaded file from client's folder"""
+    client_ip = request.remote_addr
+    downloads_dir = get_client_downloads_folder(client_ip)
+    file_path = os.path.join(downloads_dir, secure_filename(filename))
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
     return jsonify({'error': 'File not found'}), 404
@@ -809,11 +829,13 @@ def download_file(filename):
 
 @app.route('/list_downloads')
 def list_downloads():
-    """List all downloaded files (excluding .part files - incomplete downloads)"""
+    """List all downloaded files for the requesting client (excluding .part files - incomplete downloads)"""
+    client_ip = request.remote_addr
+    downloads_dir = get_client_downloads_folder(client_ip)
     files = []
-    if os.path.exists(DOWNLOADS_DIR):
-        for file in os.listdir(DOWNLOADS_DIR):
-            file_path = os.path.join(DOWNLOADS_DIR, file)
+    if os.path.exists(downloads_dir):
+        for file in os.listdir(downloads_dir):
+            file_path = os.path.join(downloads_dir, file)
             # Only show completed files, exclude .part files (incomplete downloads)
             if os.path.isfile(file_path) and not file.endswith('.part'):
                 try:
@@ -833,17 +855,20 @@ def list_downloads():
 
 @app.route('/open_folder')
 def open_folder():
-    """Open the downloads folder in the file explorer"""
+    """Open the downloads folder for the requesting client in the file explorer"""
     import platform
     import subprocess
     
+    client_ip = request.remote_addr
+    downloads_dir = get_client_downloads_folder(client_ip)
+    
     try:
         if platform.system() == 'Windows':
-            os.startfile(DOWNLOADS_DIR)
+            os.startfile(downloads_dir)
         elif platform.system() == 'Darwin':  # macOS
-            subprocess.Popen(['open', DOWNLOADS_DIR])
+            subprocess.Popen(['open', downloads_dir])
         else:  # Linux
-            subprocess.Popen(['xdg-open', DOWNLOADS_DIR])
+            subprocess.Popen(['xdg-open', downloads_dir])
         return jsonify({'success': True, 'message': 'Folder opened'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -851,28 +876,31 @@ def open_folder():
 
 @app.route('/open_file_in_folder/<path:filename>')
 def open_file_in_folder(filename):
-    """Open a specific file's location in the file explorer"""
+    """Open a specific file's location in the file explorer for the requesting client"""
     import platform
     import subprocess
     from urllib.parse import unquote
+    
+    client_ip = request.remote_addr
+    downloads_dir = get_client_downloads_folder(client_ip)
     
     try:
         # Decode URL-encoded filename
         decoded_filename = unquote(filename)
         # Use secure_filename to sanitize, but preserve the original for lookup
-        file_path = os.path.join(DOWNLOADS_DIR, decoded_filename)
+        file_path = os.path.join(downloads_dir, decoded_filename)
         
         # Check if file exists with decoded name
         if not os.path.exists(file_path):
             # Try with secure_filename as fallback
             safe_filename = secure_filename(decoded_filename)
-            file_path = os.path.join(DOWNLOADS_DIR, safe_filename)
+            file_path = os.path.join(downloads_dir, safe_filename)
             if not os.path.exists(file_path):
                 # List files to find a match (case-insensitive)
-                if os.path.exists(DOWNLOADS_DIR):
-                    for file in os.listdir(DOWNLOADS_DIR):
+                if os.path.exists(downloads_dir):
+                    for file in os.listdir(downloads_dir):
                         if file.lower() == decoded_filename.lower() or file.lower() == safe_filename.lower():
-                            file_path = os.path.join(DOWNLOADS_DIR, file)
+                            file_path = os.path.join(downloads_dir, file)
                             break
                     else:
                         return jsonify({'success': False, 'error': f'File not found: {decoded_filename}'}), 404
@@ -889,7 +917,7 @@ def open_file_in_folder(filename):
             subprocess.Popen(['open', '-R', file_path])
         else:  # Linux
             # Linux: open folder (file selection varies by file manager)
-            subprocess.Popen(['xdg-open', DOWNLOADS_DIR])
+            subprocess.Popen(['xdg-open', downloads_dir])
         return jsonify({'success': True, 'message': 'File location opened'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'Error opening file: {str(e)}'}), 500
