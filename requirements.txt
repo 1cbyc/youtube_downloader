@@ -1,3 +1,4 @@
-pytube
-tqdm
-flask
+flask==3.0.0
+yt-dlp==2023.12.30
+werkzeug==3.0.1
+
