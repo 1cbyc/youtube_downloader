@@ -234,16 +234,17 @@ public class YoutubeDownloadService
 
                 process.Start();
 
-                // Read progress output
+                // Read progress output and errors
                 string? line;
-                string? errorOutput = null;
+                var errorOutputBuilder = new System.Text.StringBuilder();
                 
-                // Read stderr for error messages
-                _ = Task.Run(async () =>
+                // Read stderr for error messages in background
+                var errorTask = Task.Run(async () =>
                 {
-                    while ((line = await process.StandardError.ReadLineAsync()) != null)
+                    string? errorLine;
+                    while ((errorLine = await process.StandardError.ReadLineAsync()) != null)
                     {
-                        errorOutput = (errorOutput ?? "") + line + "\n";
+                        errorOutputBuilder.AppendLine(errorLine);
                     }
                 });
 
@@ -290,7 +291,11 @@ public class YoutubeDownloadService
                     }
                 }
 
+                // Wait for both stdout and stderr to finish
                 await process.WaitForExitAsync();
+                await errorTask; // Wait for error reading to complete
+                
+                var errorOutput = errorOutputBuilder.ToString();
 
                 // Check if paused after download completes
                 if (queueService.IsPaused(jobId))
@@ -318,23 +323,22 @@ public class YoutubeDownloadService
                 else
                 {
                     // Check error output for specific error types that should trigger fallback
-                    var errorMsg = errorOutput ?? "";
-                    if (errorMsg.Contains("HTTP Error 403") || 
-                        errorMsg.Contains("HTTP Error 400") || 
-                        errorMsg.Contains("Precondition check failed") ||
-                        errorMsg.Contains("403") ||
-                        errorMsg.Contains("Forbidden"))
+                    if (errorOutput.Contains("HTTP Error 403") || 
+                        errorOutput.Contains("HTTP Error 400") || 
+                        errorOutput.Contains("Precondition check failed") ||
+                        errorOutput.Contains("403") ||
+                        errorOutput.Contains("Forbidden"))
                     {
                         // This client failed, try next one
-                        lastError = errorMsg;
+                        lastError = errorOutput;
                         _logger.LogWarning("Client {Client} failed for {Url}, trying next client. Error: {Error}", 
-                            client, normalizedUrl, errorMsg.Substring(0, Math.Min(200, errorMsg.Length)));
+                            client, normalizedUrl, errorOutput.Length > 200 ? errorOutput.Substring(0, 200) : errorOutput);
                         continue;
                     }
                     else
                     {
                         // Other error, but still try next client
-                        lastError = errorMsg;
+                        lastError = errorOutput;
                         continue;
                     }
                 }
