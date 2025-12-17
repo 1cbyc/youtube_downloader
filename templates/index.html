@@ -47,6 +47,14 @@
 
             <div class="queue-section">
                 <h2><i class="fas fa-tasks"></i> Download Queue</h2>
+                <div class="queue-actions">
+                    <button id="pauseAllBtn" class="btn-pause-all" title="Pause all downloads">
+                        <i class="fas fa-pause-circle"></i> Pause All
+                    </button>
+                    <button id="resumeAllBtn" class="btn-resume-all" title="Resume all paused downloads">
+                        <i class="fas fa-play-circle"></i> Resume All
+                    </button>
+                </div>
                 <div id="queueList" class="queue-list">
                     <p class="loading-text">Loading queue...</p>
                 </div>
@@ -131,6 +139,9 @@
                 const queueList = document.getElementById('queueList');
                 
                 if (data.jobs && data.jobs.length > 0) {
+                    // Count queued items for prioritize button logic
+                    const queuedCount = data.jobs.filter(j => j.status === 'queued').length;
+                    
                     queueList.innerHTML = data.jobs.map(job => {
                         const jobId = job.job_id || 'unknown';
                         const status = job.status || 'unknown';
@@ -143,17 +154,27 @@
                         let progressBar = '';
                         
                         let actionButtons = '';
+                        const queuePos = job.queue_position || 0;
+                        const isQueued = status === 'queued';
                         
                         if (status === 'queued') {
                             statusIcon = '<i class="fas fa-clock"></i>';
                             statusClass = 'status-queued';
                             progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: 0%"></div></div>`;
                             actionButtons = `
+                                <div class="priority-buttons">
+                                    <button onclick="prioritizeDownload('${jobId}', 'up')" class="btn-priority" title="Move up (higher priority)" ${queuePos <= 1 ? 'disabled' : ''}>
+                                        <i class="fas fa-arrow-up"></i>
+                                    </button>
+                                    <button onclick="prioritizeDownload('${jobId}', 'down')" class="btn-priority" title="Move down (lower priority)" ${queuePos >= queuedCount ? 'disabled' : ''}>
+                                        <i class="fas fa-arrow-down"></i>
+                                    </button>
+                                </div>
                                 <button onclick="pauseDownload('${jobId}')" class="btn-pause-small" title="Pause download">
                                     <i class="fas fa-pause"></i> Pause
                                 </button>
-                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
-                                    <i class="fas fa-link"></i> Source
+                                <button onclick="copySourceUrl('${jobId}')" class="btn-source-small" title="Copy video source URL">
+                                    <i class="fas fa-copy"></i> Copy
                                 </button>
                             `;
                         } else if (status === 'downloading') {
@@ -165,8 +186,8 @@
                                 <button onclick="pauseDownload('${jobId}')" class="btn-pause-small" title="Pause download">
                                     <i class="fas fa-pause"></i> Pause
                                 </button>
-                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
-                                    <i class="fas fa-link"></i> Source
+                                <button onclick="copySourceUrl('${jobId}')" class="btn-source-small" title="Copy video source URL">
+                                    <i class="fas fa-copy"></i> Copy
                                 </button>
                             `;
                         } else if (status === 'paused') {
@@ -177,8 +198,8 @@
                                 <button onclick="resumeDownload('${jobId}')" class="btn-resume-small" title="Resume download">
                                     <i class="fas fa-play"></i> Resume
                                 </button>
-                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
-                                    <i class="fas fa-link"></i> Source
+                                <button onclick="copySourceUrl('${jobId}')" class="btn-source-small" title="Copy video source URL">
+                                    <i class="fas fa-copy"></i> Copy
                                 </button>
                             `;
                         } else if (status === 'completed') {
@@ -198,18 +219,18 @@
                                 <button onclick="resumeDownload('${jobId}')" class="btn-resume-small" title="Retry download">
                                     <i class="fas fa-redo"></i> Retry
                                 </button>
-                                <button onclick="getSourceUrl('${jobId}')" class="btn-source-small" title="Get video source URL">
-                                    <i class="fas fa-link"></i> Source
+                                <button onclick="copySourceUrl('${jobId}')" class="btn-source-small" title="Copy video source URL">
+                                    <i class="fas fa-copy"></i> Copy
                                 </button>
                             `;
                         }
                         
-                        const queuePos = job.queue_position ? `#${job.queue_position} ` : '';
+                        const queuePosDisplay = queuePos ? `#${queuePos} ` : '';
                         
                         return `
                             <div class="queue-item ${statusClass}" data-job-id="${jobId}">
                                 <div class="queue-item-header">
-                                    <span class="queue-status">${statusIcon} ${queuePos}${status.charAt(0).toUpperCase() + status.slice(1)}</span>
+                                    <span class="queue-status">${statusIcon} ${queuePosDisplay}${status.charAt(0).toUpperCase() + status.slice(1)}</span>
                                     <div class="queue-item-actions">
                                         ${actionButtons}
                                     </div>
@@ -311,6 +332,12 @@
             }
         });
         
+        // Pause all button handler
+        document.getElementById('pauseAllBtn').addEventListener('click', pauseAllDownloads);
+        
+        // Resume all button handler
+        document.getElementById('resumeAllBtn').addEventListener('click', resumeAllDownloads);
+        
         // View file in folder handler
         function openFileInFolder(filename) {
             fetch('/open_file_in_folder/' + encodeURIComponent(filename))
@@ -379,8 +406,14 @@
             }
         }
         
-        // Get source URL
-        async function getSourceUrl(jobId) {
+        // Copy source URL to clipboard
+        async function copySourceUrl(jobId) {
+            // Prevent duplicate requests
+            if (pendingOperations.has(`copy-${jobId}`)) {
+                return;
+            }
+            
+            pendingOperations.add(`copy-${jobId}`);
             try {
                 const response = await fetch(`/source_url/${jobId}`);
                 const data = await response.json();
@@ -388,29 +421,93 @@
                     // Copy to clipboard
                     await navigator.clipboard.writeText(data.source_url);
                     showMessage(`Source URL copied to clipboard! (${data.title})`, 'success');
-                    
-                    // Also show in a prompt for easy access
-                    const userChoice = confirm(
-                        `Source URL copied to clipboard!\n\n` +
-                        `Title: ${data.title}\n` +
-                        `URL: ${data.source_url}\n\n` +
-                        `Click OK to open in new tab, or Cancel to close.`
-                    );
-                    if (userChoice) {
-                        window.open(data.source_url, '_blank');
-                    }
                 } else {
                     showMessage('Error: ' + (data.error || 'Source URL not available yet'), 'error');
                 }
             } catch (error) {
-                showMessage('Error getting source URL: ' + error.message, 'error');
+                showMessage('Error copying source URL: ' + error.message, 'error');
+            } finally {
+                pendingOperations.delete(`copy-${jobId}`);
+            }
+        }
+        
+        // Prioritize download (move up/down in queue)
+        async function prioritizeDownload(jobId, direction) {
+            // Prevent duplicate requests
+            if (pendingOperations.has(`prioritize-${jobId}-${direction}`)) {
+                return;
+            }
+            
+            pendingOperations.add(`prioritize-${jobId}-${direction}`);
+            try {
+                const response = await fetch(`/prioritize/${jobId}/${direction}`, { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showMessage(data.message || 'Queue updated', 'success');
+                    updateQueue(); // Refresh queue display
+                } else {
+                    showMessage('Error: ' + (data.error || 'Failed to prioritize'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error prioritizing download: ' + error.message, 'error');
+            } finally {
+                pendingOperations.delete(`prioritize-${jobId}-${direction}`);
+            }
+        }
+        
+        // Pause all downloads
+        async function pauseAllDownloads() {
+            if (pendingOperations.has('pause-all')) {
+                return;
+            }
+            
+            pendingOperations.add('pause-all');
+            try {
+                const response = await fetch('/pause_all', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showMessage(data.message || 'All downloads paused', 'success');
+                    updateQueue(); // Refresh queue display
+                } else {
+                    showMessage('Error: ' + (data.error || 'Failed to pause all'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error pausing all downloads: ' + error.message, 'error');
+            } finally {
+                pendingOperations.delete('pause-all');
+            }
+        }
+        
+        // Resume all downloads
+        async function resumeAllDownloads() {
+            if (pendingOperations.has('resume-all')) {
+                return;
+            }
+            
+            pendingOperations.add('resume-all');
+            try {
+                const response = await fetch('/resume_all', { method: 'POST' });
+                const data = await response.json();
+                if (data.success) {
+                    showMessage(data.message || 'All downloads resumed', 'success');
+                    updateQueue(); // Refresh queue display
+                } else {
+                    showMessage('Error: ' + (data.error || 'Failed to resume all'), 'error');
+                }
+            } catch (error) {
+                showMessage('Error resuming all downloads: ' + error.message, 'error');
+            } finally {
+                pendingOperations.delete('resume-all');
             }
         }
         
         // Make functions globally available
         window.pauseDownload = pauseDownload;
         window.resumeDownload = resumeDownload;
-        window.getSourceUrl = getSourceUrl;
+        window.copySourceUrl = copySourceUrl;
+        window.prioritizeDownload = prioritizeDownload;
+        window.pauseAllDownloads = pauseAllDownloads;
+        window.resumeAllDownloads = resumeAllDownloads;
         
         // Auto-update queue every 500ms for smoother progress updates
         updateInterval = setInterval(() => {
