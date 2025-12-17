@@ -54,7 +54,10 @@
 
             <div class="downloads-section">
                 <h2><i class="fas fa-folder-open"></i> Downloaded Videos</h2>
-                <button id="refreshBtn" class="btn-refresh"><i class="fas fa-sync-alt"></i> Refresh List</button>
+                <div class="downloads-actions">
+                    <button id="refreshBtn" class="btn-refresh"><i class="fas fa-sync-alt"></i> Refresh List</button>
+                    <button id="openFolderBtn" class="btn-open-folder"><i class="fas fa-folder"></i> Open Folder</button>
+                </div>
                 <div id="downloadsList" class="downloads-list">
                     <p class="loading-text">Loading...</p>
                 </div>
@@ -224,6 +227,19 @@
         
         // Refresh button handler
         document.getElementById('refreshBtn').addEventListener('click', loadDownloads);
+        
+        // Open folder button handler
+        document.getElementById('openFolderBtn').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/open_folder');
+                const data = await response.json();
+                if (!data.success) {
+                    showMessage('Could not open folder: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showMessage('Error opening folder: ' + error.message, 'error');
+            }
+        });
         
         // Auto-update queue every 500ms for smoother progress updates
         updateInterval = setInterval(updateQueue, 500);
