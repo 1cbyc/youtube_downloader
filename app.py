@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import uuid
+import re
 from datetime import datetime
 
 app = Flask(__name__)
@@ -179,9 +180,12 @@ def download_video(job_id, url, quality='best'):
                 'progress_hooks': [progress_hook.hook],
             }
             
+            # Normalize URL before processing
+            normalized_url = normalize_youtube_url(url)
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Extract info first
-                info = ydl.extract_info(url, download=False)
+                info = ydl.extract_info(normalized_url, download=False)
                 video_title = info.get('title', 'video')
                 
                 with queue_lock:
@@ -189,7 +193,7 @@ def download_video(job_id, url, quality='best'):
                     download_status[job_id]['progress'] = 10
                 
                 # Download the video
-                ydl.download([url])
+                ydl.download([normalized_url])
                 
                 # Find the downloaded file
                 filename = _find_downloaded_file(video_title)
@@ -262,9 +266,41 @@ def index():
     return render_template('index.html')
 
 
+def normalize_youtube_url(url):
+    """
+    Normalize YouTube URL to handle all formats:
+    - https://www.youtube.com/watch?v=VIDEO_ID
+    - https://youtube.com/watch?v=VIDEO_ID
+    - https://youtu.be/VIDEO_ID
+    - https://youtu.be/VIDEO_ID?si=...
+    - https://www.youtube.com/embed/VIDEO_ID
+    - etc.
+    
+    yt-dlp handles all these formats, but we normalize for consistency.
+    """
+    # Extract video ID from any YouTube URL format
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
+        r'youtube\.com\/.*[?&]v=([a-zA-Z0-9_-]{11})',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            video_id = match.group(1)
+            # Return normalized URL (yt-dlp will handle it fine, but this is cleaner)
+            return f'https://www.youtube.com/watch?v={video_id}'
+    
+    # If no pattern matches, return original URL (yt-dlp might still handle it)
+    return url
+
+
 def extract_video_title(job_id, url):
     """Extract video title in background thread"""
     try:
+        # Normalize URL first
+        normalized_url = normalize_youtube_url(url)
+        
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
@@ -272,7 +308,7 @@ def extract_video_title(job_id, url):
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(normalized_url, download=False)
             title = info.get('title', url)
             
             with queue_lock:
@@ -286,7 +322,16 @@ def extract_video_title(job_id, url):
 
 @app.route('/download', methods=['POST'])
 def add_to_queue():
-    """Add video to download queue"""
+    """Add video to download queue
+    
+    Supports all YouTube URL formats:
+    - https://www.youtube.com/watch?v=VIDEO_ID
+    - https://youtube.com/watch?v=VIDEO_ID
+    - https://youtu.be/VIDEO_ID
+    - https://youtu.be/VIDEO_ID?si=...
+    - https://www.youtube.com/embed/VIDEO_ID
+    - And more...
+    """
     data = request.get_json()
     url = data.get('url', '').strip()
     quality = data.get('quality', 'best')
@@ -294,27 +339,31 @@ def add_to_queue():
     if not url:
         return jsonify({'success': False, 'error': 'Please provide a YouTube URL'}), 400
     
+    # Check for YouTube URLs (supports all formats)
     if 'youtube.com' not in url and 'youtu.be' not in url:
-        return jsonify({'success': False, 'error': 'Please provide a valid YouTube URL'}), 400
+        return jsonify({'success': False, 'error': 'Please provide a valid YouTube URL (youtube.com or youtu.be)'}), 400
+    
+    # Normalize URL for consistent handling
+    normalized_url = normalize_youtube_url(url)
     
     # Generate unique job ID
     job_id = str(uuid.uuid4())
     
     with queue_lock:
-        download_queue.append((job_id, url, quality))
+        download_queue.append((job_id, normalized_url, quality))
         download_status[job_id] = {
             'status': 'queued',
             'progress': 0,
             'title': 'Extracting video info...',
             'error': None,
             'filename': None,
-            'url': url,
+            'url': url,  # Keep original URL for display
             'quality': quality,
             'added_at': datetime.now().isoformat()
         }
     
     # Extract title immediately in background
-    title_thread = threading.Thread(target=extract_video_title, args=(job_id, url), daemon=True)
+    title_thread = threading.Thread(target=extract_video_title, args=(job_id, normalized_url), daemon=True)
     title_thread.start()
     
     return jsonify({
