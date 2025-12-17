@@ -146,7 +146,8 @@
                         } else if (status === 'downloading') {
                             statusIcon = '<i class="fas fa-spinner fa-spin"></i>';
                             statusClass = 'status-downloading';
-                            progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div><span class="progress-text">${progress}%</span>`;
+                            const speed = job.speed ? ` • ${job.speed}` : '';
+                            progressBar = `<div class="progress-bar"><div class="progress-fill" style="width: ${progress}%"></div></div><span class="progress-text">${progress}%${speed}</span>`;
                         } else if (status === 'completed') {
                             statusIcon = '<i class="fas fa-check-circle"></i>';
                             statusClass = 'status-completed';
@@ -224,8 +225,8 @@
         // Refresh button handler
         document.getElementById('refreshBtn').addEventListener('click', loadDownloads);
         
-        // Auto-update queue every 1 second
-        updateInterval = setInterval(updateQueue, 1000);
+        // Auto-update queue every 500ms for smoother progress updates
+        updateInterval = setInterval(updateQueue, 500);
         
         // Load initial data
         updateQueue();
