@@ -256,6 +256,7 @@
         
         // Track current downloads to avoid unnecessary re-renders
         let currentDownloadsHash = '';
+        let currentFileCount = 0;
         
         // Load downloads list
         async function loadDownloads(showLoading = false) {
@@ -270,19 +271,40 @@
                 const response = await fetch('/list_downloads');
                 const data = await response.json();
                 
-                // Create a hash of current files to detect changes
-                const filesHash = data.files ? 
-                    data.files.map(f => `${f.name}:${f.size}`).join('|') : 'empty';
+                const files = data.files || [];
+                const fileCount = files.length;
                 
-                // Only update if content actually changed
-                if (filesHash === currentDownloadsHash && downloadsList.children.length > 0) {
+                // Create a hash of current files to detect changes (sorted for consistency)
+                const sortedFiles = [...files].sort((a, b) => a.name.localeCompare(b.name));
+                const filesHash = sortedFiles.map(f => `${f.name}:${f.size}`).join('|') || 'empty';
+                
+                // Update if:
+                // 1. File count changed
+                // 2. Hash changed (different files or sizes)
+                // 3. List is empty and we have files (or vice versa)
+                const shouldUpdate = 
+                    fileCount !== currentFileCount ||
+                    filesHash !== currentDownloadsHash ||
+                    (downloadsList.children.length === 0 && fileCount > 0) ||
+                    (fileCount === 0 && downloadsList.children.length > 0);
+                
+                if (!shouldUpdate && downloadsList.children.length > 0) {
                     return; // No changes, skip update
                 }
                 
                 currentDownloadsHash = filesHash;
+                currentFileCount = fileCount;
                 
-                if (data.files && data.files.length > 0) {
-                    downloadsList.innerHTML = data.files.map(file => {
+                if (files.length > 0) {
+                    // Sort files by modification time (newest first) if available, otherwise by name
+                    const sortedFiles = [...files].sort((a, b) => {
+                        if (a.modified && b.modified) {
+                            return b.modified - a.modified; // Newest first
+                        }
+                        return b.name.localeCompare(a.name);
+                    });
+                    
+                    downloadsList.innerHTML = sortedFiles.map(file => {
                         const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
                         return `
                             <div class="download-item">
