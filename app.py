@@ -4,92 +4,241 @@ import yt_dlp
 from werkzeug.utils import secure_filename
 import tempfile
 import shutil
+import threading
+import time
+import uuid
+from datetime import datetime
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Create downloads directory if it doesn't exist
-DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), 'downloads')
+DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), 'downloads', 'kids')
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
+# Download queue and status tracking
+download_queue = []
+download_status = {}  # {job_id: {'status': 'queued'|'downloading'|'completed'|'failed', 'progress': 0-100, 'title': '', 'error': ''}}
+queue_lock = threading.Lock()
+processing = False
 
-def download_video(url, quality='best'):
-    """Download video from YouTube URL"""
-    try:
-        # Configure yt-dlp options with better YouTube compatibility
-        ydl_opts = {
-            'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best' if quality == 'best' else 'worst',
-            'quiet': False,
-            'no_warnings': False,
-            # Better compatibility with YouTube's anti-bot measures
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],  # Try android first, fallback to web
-                }
-            },
-            # Add user agent to avoid detection
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            # Retry options
-            'retries': 3,
-            'fragment_retries': 3,
-            # Better error handling
-            'ignoreerrors': False,
+
+def _get_format_selector(quality):
+    """Get format selector string based on quality preference"""
+    if quality == 'best':
+        return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+    else:
+        return 'worst[ext=mp4]/worst'
+
+
+def _get_client_headers(client):
+    """Get appropriate headers for each client type"""
+    headers = {
+        'ios': {
+            'User-Agent': 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+        },
+        'android': {
+            'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+        },
+        'tv': {
+            'User-Agent': 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US',
+        },
+        'web': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
         }
+    }
+    return headers.get(client, headers['web'])
+
+
+def _find_downloaded_file(video_title):
+    """Find the downloaded file by matching title"""
+    safe_title = secure_filename(video_title[:50])
+    
+    if not os.path.exists(DOWNLOADS_DIR):
+        return None
+    
+    files = os.listdir(DOWNLOADS_DIR)
+    
+    # Try exact match first
+    for file in files:
+        if file.startswith(safe_title):
+            return file
+    
+    # Try partial match
+    for file in files:
+        if safe_title.lower() in file.lower():
+            return file
+    
+    # Get most recently modified file
+    if files:
+        files_with_paths = [(f, os.path.getmtime(os.path.join(DOWNLOADS_DIR, f))) 
+                           for f in files if os.path.isfile(os.path.join(DOWNLOADS_DIR, f))]
+        if files_with_paths:
+            files_with_paths.sort(key=lambda x: x[1], reverse=True)
+            return files_with_paths[0][0]
+    
+    return None
+
+
+class ProgressHook:
+    """Hook to track download progress"""
+    def __init__(self, job_id):
+        self.job_id = job_id
+        self.downloaded_bytes = 0
+        self.total_bytes = None
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Extract info first to get video title
-            info = ydl.extract_info(url, download=False)
-            video_title = info.get('title', 'video')
+    def hook(self, d):
+        if d['status'] == 'downloading':
+            if 'total_bytes' in d:
+                self.total_bytes = d['total_bytes']
+            if 'downloaded_bytes' in d:
+                self.downloaded_bytes = d['downloaded_bytes']
             
-            # Download the video
-            ydl.download([url])
-            
-            # Find the downloaded file - check for various extensions
-            filename = None
-            safe_title = secure_filename(video_title[:50])
-            for file in os.listdir(DOWNLOADS_DIR):
-                # Check if file starts with the safe title (handles various extensions)
-                if file.startswith(safe_title) or safe_title in file:
-                    filename = file
-                    break
-            
-            if filename:
-                return {
-                    'success': True,
-                    'filename': filename,
-                    'title': video_title,
-                    'path': os.path.join(DOWNLOADS_DIR, filename)
-                }
+            if self.total_bytes:
+                progress = int((self.downloaded_bytes / self.total_bytes) * 100)
             else:
-                return {
-                    'success': False,
-                    'error': 'Could not find downloaded file'
-                }
-                
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        # Provide more user-friendly error messages
-        if 'HTTP Error 403' in error_msg or 'Forbidden' in error_msg:
-            return {
-                'success': False,
-                'error': 'YouTube blocked the download. Try again in a few minutes or use a different video.'
-            }
-        elif 'HTTP Error 400' in error_msg or 'Precondition check failed' in error_msg:
-            return {
-                'success': False,
-                'error': 'YouTube API error. The video may be unavailable or restricted. Please try updating yt-dlp.'
-            }
-        else:
-            return {
-                'success': False,
-                'error': f'Download error: {error_msg}'
-            }
-    except Exception as e:
-        return {
-            'success': False,
-            'error': f'Unexpected error: {str(e)}'
+                progress = min(50, self.downloaded_bytes // 1000000)  # Estimate based on downloaded MB
+            
+            with queue_lock:
+                if self.job_id in download_status:
+                    download_status[self.job_id]['progress'] = progress
+                    download_status[self.job_id]['status'] = 'downloading'
+        elif d['status'] == 'finished':
+            with queue_lock:
+                if self.job_id in download_status:
+                    download_status[self.job_id]['progress'] = 100
+                    download_status[self.job_id]['status'] = 'downloading'  # Will be set to completed after file check
+
+
+def download_video(job_id, url, quality='best'):
+    """
+    Download video from YouTube URL using multiple fallback strategies.
+    Updates download_status dict with progress.
+    """
+    with queue_lock:
+        download_status[job_id] = {
+            'status': 'downloading',
+            'progress': 0,
+            'title': 'Extracting video info...',
+            'error': None,
+            'filename': None
         }
+    
+    client_priority = ['ios', 'android', 'tv', 'web']
+    last_error = None
+    
+    for client in client_priority:
+        try:
+            progress_hook = ProgressHook(job_id)
+            
+            ydl_opts = {
+                'outtmpl': os.path.join(DOWNLOADS_DIR, '%(title)s.%(ext)s'),
+                'format': _get_format_selector(quality),
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': [client],
+                        'player_skip': ['webpage', 'configs'],
+                    }
+                },
+                'http_headers': _get_client_headers(client),
+                'retries': 5,
+                'fragment_retries': 5,
+                'file_access_retries': 3,
+                'socket_timeout': 30,
+                'quiet': True,
+                'no_warnings': False,
+                'ignoreerrors': False,
+                'hls_prefer_native': True,
+                'extract_flat': False,
+                'progress_hooks': [progress_hook.hook],
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Extract info first
+                info = ydl.extract_info(url, download=False)
+                video_title = info.get('title', 'video')
+                
+                with queue_lock:
+                    download_status[job_id]['title'] = video_title
+                    download_status[job_id]['progress'] = 10
+                
+                # Download the video
+                ydl.download([url])
+                
+                # Find the downloaded file
+                filename = _find_downloaded_file(video_title)
+                
+                if filename:
+                    with queue_lock:
+                        download_status[job_id]['status'] = 'completed'
+                        download_status[job_id]['progress'] = 100
+                        download_status[job_id]['filename'] = filename
+                        download_status[job_id]['title'] = video_title
+                    return True
+                else:
+                    raise Exception('Download completed but file not found')
+                    
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            last_error = error_msg
+            
+            if 'HTTP Error 403' in error_msg or 'HTTP Error 400' in error_msg or 'Precondition check failed' in error_msg:
+                continue
+            else:
+                continue
+                
+        except Exception as e:
+            error_msg = str(e)
+            last_error = error_msg
+            continue
+    
+    # All clients failed
+    with queue_lock:
+        download_status[job_id]['status'] = 'failed'
+        download_status[job_id]['error'] = last_error or 'Unknown error'
+    return False
+
+
+def process_queue():
+    """Process download queue in background"""
+    global processing
+    
+    while True:
+        with queue_lock:
+            if download_queue and not processing:
+                processing = True
+                job = download_queue.pop(0)
+            else:
+                job = None
+        
+        if job:
+            job_id, url, quality = job
+            try:
+                download_video(job_id, url, quality)
+            except Exception as e:
+                with queue_lock:
+                    download_status[job_id]['status'] = 'failed'
+                    download_status[job_id]['error'] = str(e)
+            finally:
+                processing = False
+        
+        time.sleep(0.5)  # Check queue every 500ms
+
+
+# Start queue processor thread
+queue_thread = threading.Thread(target=process_queue, daemon=True)
+queue_thread.start()
 
 
 @app.route('/')
@@ -99,8 +248,8 @@ def index():
 
 
 @app.route('/download', methods=['POST'])
-def download():
-    """Handle video download request"""
+def add_to_queue():
+    """Add video to download queue"""
     data = request.get_json()
     url = data.get('url', '').strip()
     quality = data.get('quality', 'best')
@@ -108,23 +257,71 @@ def download():
     if not url:
         return jsonify({'success': False, 'error': 'Please provide a YouTube URL'}), 400
     
-    # Validate YouTube URL
     if 'youtube.com' not in url and 'youtu.be' not in url:
         return jsonify({'success': False, 'error': 'Please provide a valid YouTube URL'}), 400
     
-    result = download_video(url, quality)
+    # Generate unique job ID
+    job_id = str(uuid.uuid4())
     
-    if result['success']:
-        return jsonify({
-            'success': True,
-            'message': f'Successfully downloaded: {result["title"]}',
-            'filename': result['filename']
-        })
-    else:
-        return jsonify({
-            'success': False,
-            'error': result.get('error', 'Download failed')
-        }), 500
+    with queue_lock:
+        download_queue.append((job_id, url, quality))
+        download_status[job_id] = {
+            'status': 'queued',
+            'progress': 0,
+            'title': 'Waiting in queue...',
+            'error': None,
+            'filename': None,
+            'url': url,
+            'quality': quality,
+            'added_at': datetime.now().isoformat()
+        }
+    
+    return jsonify({
+        'success': True,
+        'job_id': job_id,
+        'message': 'Video added to download queue',
+        'queue_position': len(download_queue)
+    })
+
+
+@app.route('/status/<job_id>')
+def get_status(job_id):
+    """Get download status for a job"""
+    with queue_lock:
+        if job_id in download_status:
+            status = download_status[job_id].copy()
+            # Add queue position if queued
+            if status['status'] == 'queued':
+                try:
+                    queue_pos = [i for i, (jid, _, _) in enumerate(download_queue) if jid == job_id][0] + 1
+                    status['queue_position'] = queue_pos
+                except:
+                    status['queue_position'] = 0
+            return jsonify(status)
+        else:
+            return jsonify({'error': 'Job not found'}), 404
+
+
+@app.route('/queue')
+def get_queue():
+    """Get all download jobs status"""
+    with queue_lock:
+        jobs = []
+        # Add queued jobs
+        for i, (job_id, url, quality) in enumerate(download_queue):
+            if job_id in download_status:
+                job_status = download_status[job_id].copy()
+                job_status['queue_position'] = i + 1
+                jobs.append(job_status)
+        
+        # Add active/processing jobs
+        for job_id, status in download_status.items():
+            if status['status'] in ['downloading', 'completed', 'failed']:
+                job_status = status.copy()
+                job_status['job_id'] = job_id
+                jobs.append(job_status)
+        
+        return jsonify({'jobs': jobs})
 
 
 @app.route('/download_file/<filename>')
@@ -153,4 +350,3 @@ def list_downloads():
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
-
