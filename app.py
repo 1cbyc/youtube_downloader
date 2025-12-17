@@ -224,6 +224,8 @@ def download_video(job_id, url, quality='best'):
                         download_status[job_id]['progress'] = 100
                         download_status[job_id]['filename'] = filename
                         download_status[job_id]['title'] = video_title
+                        download_status[job_id]['completed_at'] = datetime.now().isoformat()
+                    # Trigger a refresh of downloads list (will be picked up by frontend polling)
                     return True
                 else:
                     raise Exception('Download completed but file not found')
@@ -501,6 +503,31 @@ def open_folder():
         else:  # Linux
             subprocess.Popen(['xdg-open', DOWNLOADS_DIR])
         return jsonify({'success': True, 'message': 'Folder opened'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/open_file_in_folder/<filename>')
+def open_file_in_folder(filename):
+    """Open a specific file's location in the file explorer"""
+    import platform
+    import subprocess
+    
+    try:
+        file_path = os.path.join(DOWNLOADS_DIR, secure_filename(filename))
+        if not os.path.exists(file_path):
+            return jsonify({'success': False, 'error': 'File not found'}), 404
+        
+        if platform.system() == 'Windows':
+            # Windows: open folder and select the file
+            subprocess.Popen(['explorer', '/select,', file_path])
+        elif platform.system() == 'Darwin':  # macOS
+            # macOS: reveal file in Finder
+            subprocess.Popen(['open', '-R', file_path])
+        else:  # Linux
+            # Linux: open folder (file selection varies by file manager)
+            subprocess.Popen(['xdg-open', DOWNLOADS_DIR])
+        return jsonify({'success': True, 'message': 'File location opened'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
