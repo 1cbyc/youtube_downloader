@@ -15,7 +15,7 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Get the user's Downloads folder (works on Windows, macOS, and Linux)
 def get_downloads_folder():
-    """Get the user's Downloads folder path"""
+    """Get the base Downloads folder path"""
     import platform
     home = os.path.expanduser('~')
     
@@ -29,13 +29,20 @@ def get_downloads_folder():
         # Linux: /home/username/Downloads
         downloads = os.path.join(home, 'Downloads')
     
-    # Create kids subfolder in Downloads
-    kids_folder = os.path.join(downloads, 'kids')
-    os.makedirs(kids_folder, exist_ok=True)
-    return kids_folder
+    return downloads
 
-# Create downloads directory in user's Downloads folder
-DOWNLOADS_DIR = get_downloads_folder()
+def get_client_downloads_folder(client_ip):
+    """Get downloads folder for a specific client IP address"""
+    base_downloads = get_downloads_folder()
+    # Create folder structure: Downloads/kids/{client_ip}/
+    # Replace dots and colons in IP for folder name safety
+    safe_ip = client_ip.replace('.', '_').replace(':', '_')
+    client_folder = os.path.join(base_downloads, 'kids', safe_ip)
+    os.makedirs(client_folder, exist_ok=True)
+    return client_folder
+
+# Base downloads directory (for backward compatibility)
+BASE_DOWNLOADS_DIR = get_downloads_folder()
 
 # Download queue and status tracking
 download_queue = []
@@ -84,14 +91,14 @@ def _get_client_headers(client):
     return headers.get(client, headers['web'])
 
 
-def _find_downloaded_file(video_title):
-    """Find the downloaded file by matching title"""
+def _find_downloaded_file(video_title, downloads_dir):
+    """Find the downloaded file by matching title in the specified downloads directory"""
     safe_title = secure_filename(video_title[:50])
     
-    if not os.path.exists(DOWNLOADS_DIR):
+    if not os.path.exists(downloads_dir):
         return None
     
-    files = os.listdir(DOWNLOADS_DIR)
+    files = os.listdir(downloads_dir)
     
     # Try exact match first
     for file in files:
@@ -105,8 +112,8 @@ def _find_downloaded_file(video_title):
     
     # Get most recently modified file
     if files:
-        files_with_paths = [(f, os.path.getmtime(os.path.join(DOWNLOADS_DIR, f))) 
-                           for f in files if os.path.isfile(os.path.join(DOWNLOADS_DIR, f))]
+        files_with_paths = [(f, os.path.getmtime(os.path.join(downloads_dir, f))) 
+                           for f in files if os.path.isfile(os.path.join(downloads_dir, f))]
         if files_with_paths:
             files_with_paths.sort(key=lambda x: x[1], reverse=True)
             return files_with_paths[0][0]
