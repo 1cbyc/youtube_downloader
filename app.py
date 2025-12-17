@@ -425,17 +425,36 @@ def download_file(filename):
 
 @app.route('/list_downloads')
 def list_downloads():
-    """List all downloaded files"""
+    """List all downloaded files (excluding .part files - incomplete downloads)"""
     files = []
     if os.path.exists(DOWNLOADS_DIR):
         for file in os.listdir(DOWNLOADS_DIR):
             file_path = os.path.join(DOWNLOADS_DIR, file)
-            if os.path.isfile(file_path):
+            # Only show completed files, exclude .part files (incomplete downloads)
+            if os.path.isfile(file_path) and not file.endswith('.part'):
                 files.append({
                     'name': file,
                     'size': os.path.getsize(file_path)
                 })
     return jsonify({'files': files})
+
+
+@app.route('/open_folder')
+def open_folder():
+    """Open the downloads folder in the file explorer"""
+    import platform
+    import subprocess
+    
+    try:
+        if platform.system() == 'Windows':
+            os.startfile(DOWNLOADS_DIR)
+        elif platform.system() == 'Darwin':  # macOS
+            subprocess.Popen(['open', DOWNLOADS_DIR])
+        else:  # Linux
+            subprocess.Popen(['xdg-open', DOWNLOADS_DIR])
+        return jsonify({'success': True, 'message': 'Folder opened'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 if __name__ == '__main__':
