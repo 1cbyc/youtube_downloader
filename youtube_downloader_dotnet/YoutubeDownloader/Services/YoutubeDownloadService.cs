@@ -348,7 +348,7 @@ public class YoutubeDownloadService
         }
 
         // All clients failed
-        if (status.TryGetValue(jobId, out var failedJob))
+        if (jobStatus.TryGetValue(jobId, out var failedJob))
         {
             failedJob.Status = "failed";
             failedJob.Error = lastError ?? "All client fallbacks failed";
