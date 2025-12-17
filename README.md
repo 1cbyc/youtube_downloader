@@ -65,7 +65,11 @@ http://localhost:5000
 
 ## Notes
 
-- Downloaded videos are saved in the `downloads/kids` folder
+- Downloaded videos are saved in your **Downloads/kids** folder on your computer:
+  - **Windows**: `C:\Users\YourName\Downloads\kids`
+  - **macOS**: `/Users/YourName/Downloads/kids`
+  - **Linux**: `/home/YourName/Downloads/kids`
 - The application runs on port 5000 by default
 - Make sure you have enough disk space for downloaded videos
+- Use the "Open Folder" button in the app to quickly access your downloaded videos
 
