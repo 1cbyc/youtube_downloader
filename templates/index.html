@@ -186,14 +186,32 @@
             }
         }
         
+        // Track current downloads to avoid unnecessary re-renders
+        let currentDownloadsHash = '';
+        
         // Load downloads list
-        async function loadDownloads() {
+        async function loadDownloads(showLoading = false) {
             const downloadsList = document.getElementById('downloadsList');
-            downloadsList.innerHTML = '<p class="loading-text">Loading...</p>';
+            
+            // Only show loading on first load or explicit request
+            if (showLoading && downloadsList.children.length === 0) {
+                downloadsList.innerHTML = '<p class="loading-text">Loading...</p>';
+            }
             
             try {
                 const response = await fetch('/list_downloads');
                 const data = await response.json();
+                
+                // Create a hash of current files to detect changes
+                const filesHash = data.files ? 
+                    data.files.map(f => `${f.name}:${f.size}`).join('|') : 'empty';
+                
+                // Only update if content actually changed
+                if (filesHash === currentDownloadsHash && downloadsList.children.length > 0) {
+                    return; // No changes, skip update
+                }
+                
+                currentDownloadsHash = filesHash;
                 
                 if (data.files && data.files.length > 0) {
                     downloadsList.innerHTML = data.files.map(file => {
@@ -204,9 +222,14 @@
                                     <span class="file-name">${escapeHtml(file.name)}</span>
                                     <span class="file-size">${sizeMB} MB</span>
                                 </div>
-                                <a href="/download_file/${encodeURIComponent(file.name)}" class="btn-download-file" download>
-                                    <i class="fas fa-download"></i> Download
-                                </a>
+                                <div class="download-item-actions">
+                                    <button onclick="openFileInFolder('${encodeURIComponent(file.name)}')" class="btn-view-folder" title="View in folder">
+                                        <i class="fas fa-folder-open"></i> View in Folder
+                                    </button>
+                                    <a href="/download_file/${encodeURIComponent(file.name)}" class="btn-download-file" download>
+                                        <i class="fas fa-download"></i> Download
+                                    </a>
+                                </div>
                             </div>
                         `;
                     }).join('');
@@ -214,7 +237,10 @@
                     downloadsList.innerHTML = '<p class="no-downloads">No videos downloaded yet.</p>';
                 }
             } catch (error) {
-                downloadsList.innerHTML = '<p class="error-text">Error loading downloads.</p>';
+                // Only show error if list is empty, otherwise keep current content
+                if (downloadsList.children.length === 0) {
+                    downloadsList.innerHTML = '<p class="error-text">Error loading downloads.</p>';
+                }
             }
         }
         
@@ -226,7 +252,10 @@
         }
         
         // Refresh button handler
-        document.getElementById('refreshBtn').addEventListener('click', loadDownloads);
+        document.getElementById('refreshBtn').addEventListener('click', () => {
+            currentDownloadsHash = ''; // Reset hash to force refresh
+            loadDownloads(true);
+        });
         
         // Open folder button handler
         document.getElementById('openFolderBtn').addEventListener('click', async () => {
@@ -241,12 +270,34 @@
             }
         });
         
+        // View file in folder handler
+        function openFileInFolder(filename) {
+            fetch('/open_file_in_folder/' + encodeURIComponent(filename))
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.success) {
+                        showMessage('Could not open file location: ' + (data.error || 'Unknown error'), 'error');
+                    }
+                })
+                .catch(error => {
+                    showMessage('Error opening file location: ' + error.message, 'error');
+                });
+        }
+        
+        // Make function globally available
+        window.openFileInFolder = openFileInFolder;
+        
         // Auto-update queue every 500ms for smoother progress updates
-        updateInterval = setInterval(updateQueue, 500);
+        updateInterval = setInterval(() => {
+            updateQueue();
+            // Also refresh downloads list periodically to catch completed downloads
+            // Pass false to avoid showing "Loading..." on each update
+            loadDownloads(false);
+        }, 2000); // Refresh downloads list every 2 seconds
         
         // Load initial data
         updateQueue();
-        loadDownloads();
+        loadDownloads(true); // Show loading on initial load
         
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
