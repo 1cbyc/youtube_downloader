@@ -164,6 +164,8 @@ cython_debug/
 # 1cbyc
 *.ps1
 *.md
+*.sh
+*.txt
 
 # .NET / C# Build Artifacts
 ## Build results
