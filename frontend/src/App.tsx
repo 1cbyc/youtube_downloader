@@ -41,8 +41,8 @@ function App() {
     try {
       const saved = localStorage.getItem('downloadProgress')
       if (saved) {
-        const progress = JSON.parse(saved)
-        // Restore any relevant state
+        // Progress is loaded and used by the download status polling
+        // No need to restore state here as polling will update it
       }
     } catch (e) {
       console.error('Failed to load saved progress:', e)
