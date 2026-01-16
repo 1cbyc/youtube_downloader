@@ -8,22 +8,77 @@ import threading
 import time
 import uuid
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
+import logging
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Get the user's Downloads folder (works on Windows, macOS, and Linux)
 # For cloud deployment, use a downloads directory in the app folder
 def get_downloads_folder():
-    """Get the base Downloads folder path"""
+    """Get the base Downloads folder path with cloud deployment support"""
     import platform
     
     # Check if we're in a cloud environment (Railway, Heroku, etc.)
-    # Use environment variable or default to app directory
+    # Use environment variable or default to ephemeral storage
     cloud_downloads = os.environ.get('DOWNLOADS_DIR')
     if cloud_downloads:
-        return cloud_downloads
+        try:
+            # Ensure the directory exists and is writable
+            os.makedirs(cloud_downloads, exist_ok=True)
+            # Test write permissions
+            test_file = os.path.join(cloud_downloads, '.write_test')
+            try:
+                with open(test_file, 'w') as f:
+                    f.write('test')
+                os.remove(test_file)
+                logger.info(f"Using cloud downloads directory: {cloud_downloads}")
+                return cloud_downloads
+            except (OSError, PermissionError) as e:
+                logger.warning(f"Cannot write to DOWNLOADS_DIR {cloud_downloads}: {e}. Using fallback.")
+        except Exception as e:
+            logger.warning(f"Error setting up DOWNLOADS_DIR {cloud_downloads}: {e}. Using fallback.")
+    
+    # Check if we're in a cloud environment (Railway sets RAILWAY_ENVIRONMENT)
+    # or if we're in a container (common cloud indicator)
+    is_cloud = (
+        os.environ.get('RAILWAY_ENVIRONMENT') or 
+        os.environ.get('DYNO') or  # Heroku
+        os.environ.get('VERCEL') or  # Vercel
+        os.path.exists('/.dockerenv')  # Docker container
+    )
+    
+    if is_cloud:
+        # For cloud: use ephemeral storage (/tmp) by default to save storage costs
+        # Files in /tmp are cleared on container restart, saving Railway storage
+        if USE_EPHEMERAL_STORAGE:
+            tmp_downloads = '/tmp/downloads'
+            try:
+                os.makedirs(tmp_downloads, exist_ok=True)
+                logger.info(f"Using ephemeral storage: {tmp_downloads} (files cleared on restart)")
+                return tmp_downloads
+            except Exception as e:
+                logger.error(f"Cannot create /tmp/downloads: {e}")
+        
+        # Fallback to app directory if ephemeral storage disabled
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        cloud_default = os.path.join(app_dir, 'downloads')
+        try:
+            os.makedirs(cloud_default, exist_ok=True)
+            logger.info(f"Using persistent cloud downloads directory: {cloud_default}")
+            return cloud_default
+        except Exception as e:
+            logger.error(f"Cannot create cloud downloads directory {cloud_default}: {e}")
+            # Last resort: use /tmp
+            tmp_downloads = '/tmp/downloads'
+            os.makedirs(tmp_downloads, exist_ok=True)
+            logger.warning(f"Using /tmp/downloads as fallback")
+            return tmp_downloads
     
     # For local development, use user's Downloads folder
     home = os.path.expanduser('~')
@@ -40,17 +95,55 @@ def get_downloads_folder():
     
     return downloads
 
+def get_client_ip():
+    """Get client IP address, handling proxy headers for cloud deployments"""
+    # Check for X-Forwarded-For header (used by Railway, Heroku, etc.)
+    forwarded_for = request.headers.get('X-Forwarded-For')
+    if forwarded_for:
+        # X-Forwarded-For can contain multiple IPs, take the first one
+        client_ip = forwarded_for.split(',')[0].strip()
+        logger.debug(f"Using X-Forwarded-For IP: {client_ip}")
+        return client_ip
+    
+    # Check for X-Real-IP header (alternative proxy header)
+    real_ip = request.headers.get('X-Real-IP')
+    if real_ip:
+        logger.debug(f"Using X-Real-IP: {real_ip}")
+        return real_ip
+    
+    # Fallback to remote_addr
+    client_ip = request.remote_addr
+    logger.debug(f"Using remote_addr: {client_ip}")
+    return client_ip
+
 def get_client_downloads_folder(client_ip):
-    """Get downloads folder for a specific client IP address"""
-    base_downloads = get_downloads_folder()
-    # Ensure base directory exists (important for cloud deployments)
-    os.makedirs(base_downloads, exist_ok=True)
-    # Create folder structure: Downloads/kids/{client_ip}/
-    # Replace dots and colons in IP for folder name safety
-    safe_ip = client_ip.replace('.', '_').replace(':', '_')
-    client_folder = os.path.join(base_downloads, 'kids', safe_ip)
-    os.makedirs(client_folder, exist_ok=True)
-    return client_folder
+    """Get downloads folder for a specific client IP address with error handling"""
+    try:
+        base_downloads = get_downloads_folder()
+        # Ensure base directory exists (important for cloud deployments)
+        os.makedirs(base_downloads, exist_ok=True)
+        
+        # Create folder structure: Downloads/kids/{client_ip}/
+        # Replace dots and colons in IP for folder name safety
+        safe_ip = client_ip.replace('.', '_').replace(':', '_') if client_ip else 'unknown'
+        client_folder = os.path.join(base_downloads, 'kids', safe_ip)
+        
+        # Create directory with error handling
+        try:
+            os.makedirs(client_folder, exist_ok=True)
+        except (OSError, PermissionError) as e:
+            logger.error(f"Cannot create client folder {client_folder}: {e}")
+            # Fallback to base directory
+            return base_downloads
+        
+        return client_folder
+    except Exception as e:
+        logger.error(f"Error getting client downloads folder: {e}")
+        # Last resort: use temp directory
+        temp_dir = tempfile.gettempdir()
+        fallback = os.path.join(temp_dir, 'downloads')
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
 
 # Base downloads directory (for backward compatibility)
 # Ensure it exists (important for cloud deployments)
@@ -64,6 +157,126 @@ paused_jobs = set()  # Set of job_ids that are paused
 active_downloads = {}  # {job_id: thread} - track active download threads for cancellation
 queue_lock = threading.Lock()
 processing = False
+
+# File cleanup configuration
+FILE_CLEANUP_ENABLED = os.environ.get('FILE_CLEANUP_ENABLED', 'true').lower() == 'true'
+FILE_MAX_AGE_HOURS = int(os.environ.get('FILE_MAX_AGE_HOURS', '1'))  # Default: 1 hour (aggressive cleanup for Railway)
+MAX_STORAGE_GB = float(os.environ.get('MAX_STORAGE_GB', '2.0'))  # Default: 2GB (conservative for Railway)
+AUTO_DELETE_AFTER_DOWNLOAD = os.environ.get('AUTO_DELETE_AFTER_DOWNLOAD', 'true').lower() == 'true'  # Delete file after user downloads it
+USE_EPHEMERAL_STORAGE = os.environ.get('USE_EPHEMERAL_STORAGE', 'true').lower() == 'true'  # Use /tmp for cloud (cleared on restart)
+
+
+def cleanup_old_files(downloads_dir=None, max_age_hours=None, max_storage_gb=None):
+    """Clean up old files from downloads directory
+    
+    Args:
+        downloads_dir: Directory to clean (defaults to BASE_DOWNLOADS_DIR)
+        max_age_hours: Maximum age in hours (defaults to FILE_MAX_AGE_HOURS)
+        max_storage_gb: Maximum storage in GB (defaults to MAX_STORAGE_GB)
+    """
+    if not FILE_CLEANUP_ENABLED:
+        return
+    
+    try:
+        if downloads_dir is None:
+            downloads_dir = BASE_DOWNLOADS_DIR
+        if max_age_hours is None:
+            max_age_hours = FILE_MAX_AGE_HOURS
+        if max_storage_gb is None:
+            max_storage_gb = MAX_STORAGE_GB
+        
+        if not os.path.exists(downloads_dir):
+            return
+        
+        max_age_seconds = max_age_hours * 3600
+        max_storage_bytes = max_storage_gb * 1024 * 1024 * 1024
+        current_time = time.time()
+        
+        # Collect all files recursively
+        files_to_check = []
+        total_size = 0
+        
+        for root, dirs, files in os.walk(downloads_dir):
+            for file in files:
+                # Skip .part files (incomplete downloads)
+                if file.endswith('.part'):
+                    continue
+                
+                file_path = os.path.join(root, file)
+                try:
+                    file_stat = os.stat(file_path)
+                    file_age = current_time - file_stat.st_mtime
+                    file_size = file_stat.st_size
+                    
+                    files_to_check.append({
+                        'path': file_path,
+                        'age': file_age,
+                        'size': file_size,
+                        'mtime': file_stat.st_mtime
+                    })
+                    total_size += file_size
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"Cannot access file {file_path}: {e}")
+                    continue
+        
+        # Sort by age (oldest first)
+        files_to_check.sort(key=lambda x: x['mtime'])
+        
+        deleted_count = 0
+        deleted_size = 0
+        
+        # Delete files older than max_age
+        for file_info in files_to_check:
+            if file_info['age'] > max_age_seconds:
+                try:
+                    os.remove(file_info['path'])
+                    deleted_count += 1
+                    deleted_size += file_info['size']
+                    total_size -= file_info['size']
+                    logger.info(f"Deleted old file: {file_info['path']} (age: {file_info['age']/3600:.1f}h)")
+                except (OSError, PermissionError) as e:
+                    logger.warning(f"Cannot delete file {file_info['path']}: {e}")
+        
+        # If still over storage limit, delete oldest files
+        if total_size > max_storage_bytes:
+            for file_info in files_to_check:
+                if total_size <= max_storage_bytes:
+                    break
+                if os.path.exists(file_info['path']):
+                    try:
+                        os.remove(file_info['path'])
+                        deleted_count += 1
+                        deleted_size += file_info['size']
+                        total_size -= file_info['size']
+                        logger.info(f"Deleted file for storage limit: {file_info['path']}")
+                    except (OSError, PermissionError) as e:
+                        logger.warning(f"Cannot delete file {file_info['path']}: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"Cleanup completed: deleted {deleted_count} files, freed {deleted_size/(1024*1024):.2f} MB")
+    
+    except Exception as e:
+        logger.error(f"Error during file cleanup: {e}")
+
+
+def cleanup_worker():
+    """Background worker thread for periodic file cleanup"""
+    while True:
+        try:
+            time.sleep(3600)  # Run every hour
+            cleanup_old_files()
+        except Exception as e:
+            logger.error(f"Error in cleanup worker: {e}")
+            time.sleep(60)  # Wait 1 minute before retrying
+
+
+# Start cleanup worker thread
+if FILE_CLEANUP_ENABLED:
+    cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
+    cleanup_thread.start()
+    logger.info(f"File cleanup enabled: max age {FILE_MAX_AGE_HOURS}h, max storage {MAX_STORAGE_GB}GB")
+    logger.info(f"Auto-delete after download: {AUTO_DELETE_AFTER_DOWNLOAD}")
+    logger.info(f"Ephemeral storage: {USE_EPHEMERAL_STORAGE}")
 
 
 def _get_format_selector(quality):
@@ -191,13 +404,41 @@ def download_video(job_id, url, quality='best', client_ip=None):
         quality: Video quality ('best' or 'worst')
         client_ip: IP address of the client requesting the download
     """
-    # Get client-specific downloads folder
-    if client_ip:
-        downloads_dir = get_client_downloads_folder(client_ip)
-    else:
-        # Fallback to default folder for backward compatibility
-        downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
-        os.makedirs(downloads_dir, exist_ok=True)
+    try:
+        # Get client-specific downloads folder with error handling
+        if client_ip:
+            downloads_dir = get_client_downloads_folder(client_ip)
+        else:
+            # Fallback to default folder for backward compatibility
+            downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
+            try:
+                os.makedirs(downloads_dir, exist_ok=True)
+            except (OSError, PermissionError) as e:
+                logger.error(f"Cannot create downloads directory {downloads_dir}: {e}")
+                with queue_lock:
+                    if job_id in download_status:
+                        download_status[job_id]['status'] = 'failed'
+                        download_status[job_id]['error'] = f'Cannot create downloads directory: {str(e)}'
+                return False
+        
+        # Check available disk space (for cloud environments)
+        try:
+            stat = os.statvfs(downloads_dir)
+            free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+            if free_space_gb < 0.5:  # Less than 500MB free
+                logger.warning(f"Low disk space: {free_space_gb:.2f} GB free")
+                # Trigger cleanup
+                cleanup_old_files(downloads_dir)
+        except (OSError, AttributeError):
+            # statvfs not available on Windows, skip check
+            pass
+    except Exception as e:
+        logger.error(f"Error setting up downloads directory: {e}")
+        with queue_lock:
+            if job_id in download_status:
+                download_status[job_id]['status'] = 'failed'
+                download_status[job_id]['error'] = f'Setup error: {str(e)}'
+        return False
     
     # Check if paused before starting
     with queue_lock:
@@ -539,8 +780,8 @@ def add_to_queue():
     - https://www.youtube.com/embed/VIDEO_ID
     - And more...
     """
-    # Get client IP from request
-    client_ip = request.remote_addr
+    # Get client IP from request (handles proxy headers for cloud)
+    client_ip = get_client_ip()
     
     data = request.get_json()
     url = data.get('url', '').strip()
@@ -799,8 +1040,8 @@ def get_source_url(job_id):
 def get_queue():
     """Get all download jobs status"""
     with queue_lock:
-        # Get client IP from request to filter jobs
-        client_ip = request.remote_addr
+        # Get client IP from request to filter jobs (handles proxy headers)
+        client_ip = get_client_ip()
         
         jobs = []
         # Add queued jobs (only for this client)
@@ -831,19 +1072,44 @@ def get_queue():
 
 @app.route('/download_file/<filename>')
 def download_file(filename):
-    """Serve downloaded file from client's folder"""
-    client_ip = request.remote_addr
+    """Serve downloaded file from client's folder and optionally delete after download"""
+    client_ip = get_client_ip()
     downloads_dir = get_client_downloads_folder(client_ip)
     file_path = os.path.join(downloads_dir, secure_filename(filename))
-    if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True)
-    return jsonify({'error': 'File not found'}), 404
+    
+    if not os.path.exists(file_path):
+        return jsonify({'error': 'File not found'}), 404
+    
+    try:
+        # Send file to user
+        response = send_file(file_path, as_attachment=True)
+        
+        # If auto-delete is enabled, delete file after sending
+        # This saves storage on Railway by removing files immediately after download
+        if AUTO_DELETE_AFTER_DOWNLOAD:
+            # Delete in background thread to not block response
+            def delete_after_send():
+                try:
+                    time.sleep(1)  # Small delay to ensure file is sent
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.info(f"Auto-deleted file after download: {filename}")
+                except Exception as e:
+                    logger.warning(f"Could not auto-delete file {file_path}: {e}")
+            
+            delete_thread = threading.Thread(target=delete_after_send, daemon=True)
+            delete_thread.start()
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        return jsonify({'error': f'Error serving file: {str(e)}'}), 500
 
 
 @app.route('/list_downloads')
 def list_downloads():
     """List all downloaded files for the requesting client (excluding .part files - incomplete downloads)"""
-    client_ip = request.remote_addr
+    client_ip = get_client_ip()
     downloads_dir = get_client_downloads_folder(client_ip)
     files = []
     if os.path.exists(downloads_dir):
@@ -872,7 +1138,7 @@ def open_folder():
     import platform
     import subprocess
     
-    client_ip = request.remote_addr
+    client_ip = get_client_ip()
     downloads_dir = get_client_downloads_folder(client_ip)
     
     try:
@@ -894,7 +1160,7 @@ def open_file_in_folder(filename):
     import subprocess
     from urllib.parse import unquote
     
-    client_ip = request.remote_addr
+    client_ip = get_client_ip()
     downloads_dir = get_client_downloads_folder(client_ip)
     
     try:
@@ -936,6 +1202,54 @@ def open_file_in_folder(filename):
         return jsonify({'success': False, 'error': f'Error opening file: {str(e)}'}), 500
 
 
+@app.route('/cleanup', methods=['POST'])
+def trigger_cleanup():
+    """Manually trigger file cleanup"""
+    try:
+        cleanup_old_files()
+        return jsonify({'success': True, 'message': 'Cleanup completed'})
+    except Exception as e:
+        logger.error(f"Error triggering cleanup: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring"""
+    try:
+        # Check if downloads directory is accessible
+        downloads_dir = get_downloads_folder()
+        os.makedirs(downloads_dir, exist_ok=True)
+        
+        # Check disk space if available
+        disk_info = {}
+        try:
+            stat = os.statvfs(downloads_dir)
+            free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+            total_space_gb = (stat.f_blocks * stat.f_frsize) / (1024 ** 3)
+            disk_info = {
+                'free_gb': round(free_space_gb, 2),
+                'total_gb': round(total_space_gb, 2),
+                'used_percent': round((1 - free_space_gb / total_space_gb) * 100, 2) if total_space_gb > 0 else 0
+            }
+        except (OSError, AttributeError):
+            pass
+        
+        return jsonify({
+            'status': 'healthy',
+            'downloads_dir': downloads_dir,
+            'disk_info': disk_info,
+            'cleanup_enabled': FILE_CLEANUP_ENABLED,
+            'auto_delete_after_download': AUTO_DELETE_AFTER_DOWNLOAD,
+            'ephemeral_storage': USE_EPHEMERAL_STORAGE,
+            'max_age_hours': FILE_MAX_AGE_HOURS,
+            'max_storage_gb': MAX_STORAGE_GB
+        })
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     # Use environment variables for production deployment
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
@@ -943,5 +1257,8 @@ if __name__ == '__main__':
     # Default to 5001 on macOS to avoid AirPlay Receiver conflict on port 5000
     # Railway will set PORT automatically, so this only affects local development
     port = int(os.environ.get('PORT', 5001))
+    
+    logger.info(f"Starting Flask app on {host}:{port} (debug={debug_mode})")
+    logger.info(f"Downloads directory: {BASE_DOWNLOADS_DIR}")
     
     app.run(debug=debug_mode, host=host, port=port)
