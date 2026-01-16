@@ -60,6 +60,21 @@
                             <option value="">Loading formats...</option>
                         </select>
                     </div>
+                    
+                    <div class="input-group" id="throttleGroup" style="display: none;">
+                        <label for="throttleSpeed"><i class="fas fa-tachometer-alt"></i> Download Speed Limit (MB/s, 0 = unlimited):</label>
+                        <input 
+                            type="number" 
+                            id="throttleSpeed" 
+                            name="throttle_speed" 
+                            min="0" 
+                            max="100" 
+                            step="0.1" 
+                            value="0"
+                            placeholder="0 = unlimited"
+                        >
+                        <small style="color: var(--text-secondary); font-size: 0.85em;">Set to 0 for unlimited speed, or specify MB/s to throttle</small>
+                    </div>
 
                     <button type="submit" class="btn-download" id="downloadBtn">
                         <span class="btn-text"><i class="fas fa-plus"></i> Add to Queue</span>
@@ -89,9 +104,17 @@
                 <div class="downloads-actions">
                     <button id="refreshBtn" class="btn-refresh"><i class="fas fa-sync-alt"></i> Refresh List</button>
                     <button id="openFolderBtn" class="btn-open-folder"><i class="fas fa-folder"></i> Open Folder</button>
+                    <button id="historyBtn" class="btn-history"><i class="fas fa-chart-line"></i> Download History</button>
                 </div>
                 <div id="downloadsList" class="downloads-list">
                     <p class="loading-text">Loading...</p>
+                </div>
+            </div>
+            
+            <div class="history-section" id="historySection" style="display: none; margin-top: 50px;">
+                <h2><i class="fas fa-chart-line"></i> Download History & Analytics</h2>
+                <div id="historyContent">
+                    <p class="loading-text">Loading history...</p>
                 </div>
             </div>
         </div>
@@ -339,19 +362,7 @@
             }
         });
         
-        // Show message
-        function showMessage(text, type) {
-            const messageDiv = document.getElementById('message');
-            messageDiv.textContent = text;
-            messageDiv.className = 'message message-' + type;
-            messageDiv.style.display = 'block';
-            
-            if (type === 'success') {
-                setTimeout(() => {
-                    messageDiv.style.display = 'none';
-                }, 3000);
-            }
-        }
+        // Enhanced error message display (defined later in the file)
         
         // Update queue display
         async function updateQueue() {
@@ -782,6 +793,123 @@
         
         // Load initial data
         loadSavedProgress(); // Load saved progress first
+        
+        // History button handler
+        document.getElementById('historyBtn').addEventListener('click', async () => {
+            const historySection = document.getElementById('historySection');
+            const historyContent = document.getElementById('historyContent');
+            
+            if (historySection.style.display === 'none') {
+                historySection.style.display = 'block';
+                historyContent.innerHTML = '<p class="loading-text">Loading history...</p>';
+                
+                try {
+                    const response = await fetch('/history');
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        const analytics = data.analytics;
+                        const history = data.history;
+                        
+                        let html = `
+                            <div style="background: var(--bg-secondary); padding: 20px; border-radius: 8px; margin-bottom: 20px; border: 1px solid var(--border);">
+                                <h3 style="margin-bottom: 15px; color: var(--accent);">Statistics</h3>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                    <div>
+                                        <strong>Total Downloads:</strong> ${analytics.total_downloads}
+                                    </div>
+                                    <div>
+                                        <strong>Failed:</strong> ${analytics.total_failed}
+                                    </div>
+                                    <div>
+                                        <strong>Success Rate:</strong> ${analytics.success_rate}%
+                                    </div>
+                                    <div>
+                                        <strong>Total Size:</strong> ${analytics.total_size_gb} GB (${analytics.total_size_mb} MB)
+                                    </div>
+                                </div>
+                            </div>
+                            <h3 style="margin-bottom: 15px;">Recent Downloads (Last 50)</h3>
+                        `;
+                        
+                        if (history.length === 0) {
+                            html += '<p style="color: var(--text-secondary);">No download history yet.</p>';
+                        } else {
+                            html += '<div style="display: flex; flex-direction: column; gap: 10px;">';
+                            history.forEach(entry => {
+                                const date = new Date(entry.completed_at || entry.failed_at || '').toLocaleString();
+                                const status = entry.status === 'completed' ? '✓' : '✗';
+                                const statusColor = entry.status === 'completed' ? '#4CAF50' : '#f44336';
+                                const fileSize = entry.file_size ? (entry.file_size / (1024 * 1024)).toFixed(2) + ' MB' : 'N/A';
+                                
+                                html += `
+                                    <div style="background: var(--bg-secondary); padding: 15px; border-radius: 8px; border: 1px solid var(--border);">
+                                        <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 10px;">
+                                            <div style="flex: 1; min-width: 200px;">
+                                                <strong style="color: ${statusColor};">${status}</strong> ${entry.title || 'Unknown'}
+                                                <br>
+                                                <small style="color: var(--text-secondary);">${date}</small>
+                                                ${entry.status === 'completed' ? `<br><small style="color: var(--text-secondary);">Size: ${fileSize}</small>` : ''}
+                                                ${entry.error ? `<br><small style="color: #f44336;">Error: ${entry.error}</small>` : ''}
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            });
+                            html += '</div>';
+                        }
+                        
+                        historyContent.innerHTML = html;
+                    } else {
+                        historyContent.innerHTML = `<p style="color: #f44336;">Error loading history: ${data.error || 'Unknown error'}</p>`;
+                    }
+                } catch (error) {
+                    historyContent.innerHTML = `<p style="color: #f44336;">Error loading history: ${error.message}</p>`;
+                }
+            } else {
+                historySection.style.display = 'none';
+            }
+        });
+        
+        // Enhanced error message display
+        function showMessage(text, type, errorType = null) {
+            const messageDiv = document.getElementById('message');
+            let displayText = text;
+            
+            // Enhance error messages based on error type
+            if (type === 'error' && errorType) {
+                switch(errorType) {
+                    case 'rate_limit_exceeded':
+                        displayText = `⏱️ ${text}`;
+                        break;
+                    case 'invalid_url':
+                        displayText = `🔗 Invalid URL: ${text}`;
+                        break;
+                    case 'missing_url':
+                        displayText = `⚠️ ${text}`;
+                        break;
+                    default:
+                        displayText = `❌ ${text}`;
+                }
+            } else if (type === 'success') {
+                displayText = `✓ ${text}`;
+            }
+            
+            messageDiv.textContent = displayText;
+            messageDiv.className = 'message message-' + type;
+            messageDiv.style.display = 'block';
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    messageDiv.style.display = 'none';
+                }, 3000);
+            } else {
+                // Keep error messages visible longer
+                setTimeout(() => {
+                    messageDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
         updateQueue();
         loadDownloads(true); // Show loading on initial load
         

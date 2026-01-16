@@ -1,0 +1,11 @@
+{
+  "name": "youtube-downloader",
+  "version": "1.0.0",
+  "description": "YouTube Downloader with React frontend and Flask backend",
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "python app.py",
+    "install:frontend": "cd frontend && npm install"
+  }
+}

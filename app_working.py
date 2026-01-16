@@ -1,5 +1,4 @@
-from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
-from flask_cors import CORS
+from flask import Flask, render_template, request, jsonify, send_file
 import os
 import yt_dlp
 from werkzeug.utils import secure_filename
@@ -17,9 +16,6 @@ import mimetypes
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())  # For CSRF protection
-
-# Enable CORS for React dev server - allow all routes since we don't use /api prefix
-CORS(app, resources={r"/*": {"origins": ["http://localhost:5173", "http://localhost:3000"]}})
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -85,9 +81,6 @@ MAX_CONCURRENT_DOWNLOADS = int(os.environ.get('MAX_CONCURRENT_DOWNLOADS', '3')) 
 # File size limits
 MAX_FILE_SIZE_GB = float(os.environ.get('MAX_FILE_SIZE_GB', '2.0'))  # Max file size per download (2GB default)
 MAX_FILE_SIZE_BYTES = int(MAX_FILE_SIZE_GB * 1024 * 1024 * 1024)
-
-# Download speed throttling (optional, in MB/s, 0 = no throttling)
-DOWNLOAD_SPEED_THROTTLE_MB = float(os.environ.get('DOWNLOAD_SPEED_THROTTLE_MB', '0'))  # 0 = unlimited
 
 # Get the user's Downloads folder (works on Windows, macOS, and Linux)
 # For cloud deployment, use a downloads directory in the app folder
@@ -228,11 +221,6 @@ paused_jobs = set()  # Set of job_ids that are paused
 active_downloads = {}  # {job_id: thread} - track active download threads for cancellation
 queue_lock = threading.Lock()
 processing = False
-
-# Download history/analytics tracking
-download_history = []  # List of completed/failed downloads for analytics
-history_lock = threading.Lock()
-MAX_HISTORY_SIZE = 1000  # Keep last 1000 downloads in history
 
 # Rate limiting tracking
 download_counts = {}  # {client_ip: {'count': int, 'reset_time': timestamp}}
@@ -421,27 +409,6 @@ def _find_downloaded_file(video_title, downloads_dir):
     return None
 
 
-class ConcurrentDownloadTracker:
-    """Context manager to track concurrent downloads and ensure cleanup"""
-    def __init__(self, client_ip):
-        self.client_ip = client_ip
-        self.incremented = False
-    
-    def __enter__(self):
-        if self.client_ip:
-            with rate_limit_lock:
-                concurrent_downloads[self.client_ip] = concurrent_downloads.get(self.client_ip, 0) + 1
-                self.incremented = True
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.client_ip and self.incremented:
-            with rate_limit_lock:
-                if self.client_ip in concurrent_downloads:
-                    concurrent_downloads[self.client_ip] = max(0, concurrent_downloads[self.client_ip] - 1)
-        return False  # Don't suppress exceptions
-
-
 class ProgressHook:
     """Hook to track download progress"""
     def __init__(self, job_id):
@@ -487,7 +454,7 @@ class ProgressHook:
                     download_status[self.job_id]['status'] = 'downloading'
 
 
-def download_video(job_id, url, quality='best', client_ip=None, format_id=None, throttle_speed=None):
+def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
     """
     Download video from YouTube URL using multiple fallback strategies.
     Updates download_status dict with progress.
@@ -499,45 +466,47 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
         quality: Video quality ('best' or 'worst')
         client_ip: IP address of the client requesting the download
         format_id: Specific format ID to download (optional)
-        throttle_speed: Download speed limit in MB/s (optional, None = use global setting)
     """
-    # Use context manager to track concurrent downloads and ensure cleanup on all exit paths
-    with ConcurrentDownloadTracker(client_ip):
-        try:
-            # Get client-specific downloads folder with error handling
-            if client_ip:
-                downloads_dir = get_client_downloads_folder(client_ip)
-            else:
-                # Fallback to default folder for backward compatibility
-                downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
-                try:
-                    os.makedirs(downloads_dir, exist_ok=True)
-                except (OSError, PermissionError) as e:
-                    logger.error(f"Cannot create downloads directory {downloads_dir}: {e}")
-                    with queue_lock:
-                        if job_id in download_status:
-                            download_status[job_id]['status'] = 'failed'
-                            download_status[job_id]['error'] = f'Cannot create downloads directory: {str(e)}'
-                    return False
-            
-            # Check available disk space (for cloud environments)
+    # Increment concurrent downloads when download actually starts (not when queued)
+    if client_ip:
+        with rate_limit_lock:
+            concurrent_downloads[client_ip] = concurrent_downloads.get(client_ip, 0) + 1
+    
+    try:
+        # Get client-specific downloads folder with error handling
+        if client_ip:
+            downloads_dir = get_client_downloads_folder(client_ip)
+        else:
+            # Fallback to default folder for backward compatibility
+            downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
             try:
-                stat = os.statvfs(downloads_dir)
-                free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
-                if free_space_gb < 0.5:  # Less than 500MB free
-                    logger.warning(f"Low disk space: {free_space_gb:.2f} GB free")
-                    # Trigger cleanup
-                    cleanup_old_files(downloads_dir)
-            except (OSError, AttributeError):
-                # statvfs not available on Windows, skip check
-                pass
-        except Exception as e:
-            logger.error(f"Error setting up downloads directory: {e}")
-            with queue_lock:
-                if job_id in download_status:
-                    download_status[job_id]['status'] = 'failed'
-                    download_status[job_id]['error'] = f'Setup error: {str(e)}'
-            return False
+                os.makedirs(downloads_dir, exist_ok=True)
+            except (OSError, PermissionError) as e:
+                logger.error(f"Cannot create downloads directory {downloads_dir}: {e}")
+                with queue_lock:
+                    if job_id in download_status:
+                        download_status[job_id]['status'] = 'failed'
+                        download_status[job_id]['error'] = f'Cannot create downloads directory: {str(e)}'
+                return False
+        
+        # Check available disk space (for cloud environments)
+        try:
+            stat = os.statvfs(downloads_dir)
+            free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+            if free_space_gb < 0.5:  # Less than 500MB free
+                logger.warning(f"Low disk space: {free_space_gb:.2f} GB free")
+                # Trigger cleanup
+                cleanup_old_files(downloads_dir)
+        except (OSError, AttributeError):
+            # statvfs not available on Windows, skip check
+            pass
+    except Exception as e:
+        logger.error(f"Error setting up downloads directory: {e}")
+        with queue_lock:
+            if job_id in download_status:
+                download_status[job_id]['status'] = 'failed'
+                download_status[job_id]['error'] = f'Setup error: {str(e)}'
+        return False
     
     # Check if paused before starting
     with queue_lock:
@@ -586,9 +555,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
             # Format selection: use format_id if provided, otherwise use quality selector
             format_selector = format_id if format_id else _get_format_selector(quality)
             
-            # Get throttle speed from job settings or use global default
-            effective_throttle = throttle_speed if throttle_speed is not None else DOWNLOAD_SPEED_THROTTLE_MB
-            
             ydl_opts = {
                 'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
                 'format': format_selector,
@@ -612,13 +578,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
                 'continue_dl': True,  # Enable resume for interrupted downloads
             }
             
-            # Add download speed throttling if enabled
-            if effective_throttle > 0:
-                # Convert MB/s to bytes/s for yt-dlp
-                throttle_bytes = int(effective_throttle * 1024 * 1024)
-                ydl_opts['ratelimit'] = throttle_bytes
-                logger.info(f"Download speed throttled to {effective_throttle} MB/s for job {job_id}")
-            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Extract info first
                 info = ydl.extract_info(normalized_url, download=False)
@@ -635,6 +594,10 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
                             download_status[job_id]['status'] = 'failed'
                             download_status[job_id]['error'] = error_msg
                             download_status[job_id]['title'] = video_title
+                    # Decrement concurrent downloads
+                    with rate_limit_lock:
+                        if client_ip in concurrent_downloads:
+                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                     return False
                 
                 # Get source URL (direct video URL if available)
@@ -690,9 +653,11 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
                             with queue_lock:
                                 download_status[job_id]['status'] = 'failed'
                                 download_status[job_id]['error'] = error_msg
+                            # Decrement concurrent downloads
+                            with rate_limit_lock:
+                                if client_ip in concurrent_downloads:
+                                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                             return False
-                    
-                    actual_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
                     
                     with queue_lock:
                         download_status[job_id]['status'] = 'completed'
@@ -700,26 +665,11 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
                         download_status[job_id]['filename'] = filename
                         download_status[job_id]['title'] = video_title
                         download_status[job_id]['completed_at'] = datetime.now().isoformat()
-                        download_status[job_id]['file_size'] = actual_size
                     
-                    # Add to download history
-                    with history_lock:
-                        history_entry = {
-                            'job_id': job_id,
-                            'title': video_title,
-                            'url': url,
-                            'filename': filename,
-                            'file_size': actual_size,
-                            'status': 'completed',
-                            'completed_at': datetime.now().isoformat(),
-                            'client_ip': client_ip,
-                            'quality': quality,
-                            'format_id': format_id
-                        }
-                        download_history.append(history_entry)
-                        # Keep only last MAX_HISTORY_SIZE entries
-                        if len(download_history) > MAX_HISTORY_SIZE:
-                            download_history.pop(0)
+                    # Decrement concurrent downloads on success
+                    with rate_limit_lock:
+                        if client_ip in concurrent_downloads:
+                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                     
                     # Trigger a refresh of downloads list (will be picked up by frontend polling)
                     return True
@@ -787,25 +737,11 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
     with queue_lock:
         download_status[job_id]['status'] = 'failed'
         download_status[job_id]['error'] = user_error
-        download_status[job_id]['failed_at'] = datetime.now().isoformat()
     
-    # Add to download history
-    with history_lock:
-        history_entry = {
-            'job_id': job_id,
-            'title': download_status[job_id].get('title', 'Unknown'),
-            'url': url,
-            'status': 'failed',
-            'error': user_error,
-            'failed_at': datetime.now().isoformat(),
-            'client_ip': client_ip,
-            'quality': quality,
-            'format_id': format_id
-        }
-        download_history.append(history_entry)
-        # Keep only last MAX_HISTORY_SIZE entries
-        if len(download_history) > MAX_HISTORY_SIZE:
-            download_history.pop(0)
+    # Decrement concurrent downloads
+    with rate_limit_lock:
+        if client_ip and client_ip in concurrent_downloads:
+            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
     
     return False
 
@@ -850,13 +786,11 @@ def process_queue():
                         processing = False
                         continue
                 
-                # Get format_id and throttle_speed from download_status if available
+                # Get format_id from download_status if available
                 format_id = None
-                throttle_speed = None
                 if job_id in download_status:
                     format_id = download_status[job_id].get('format_id')
-                    throttle_speed = download_status[job_id].get('throttle_speed')
-                download_video(job_id, url, quality, client_ip, format_id, throttle_speed)
+                download_video(job_id, url, quality, client_ip, format_id)
             except KeyboardInterrupt:
                 # Handle pause signal
                 with queue_lock:
@@ -886,39 +820,8 @@ queue_thread.start()
 
 @app.route('/')
 def index():
-    """Main page - serve React app in production, fallback to old template"""
-    # In production, serve React app from frontend/dist
-    react_dist = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', 'index.html')
-    if os.path.exists(react_dist):
-        return send_file(react_dist)
-    # Fallback to old template for development/backwards compatibility
+    """Main page"""
     return render_template('index.html')
-
-
-@app.route('/<path:path>')
-def serve_react(path):
-    """Serve React app static files and handle client-side routing"""
-    # Don't interfere with API routes
-    api_routes = ['api/', 'download_file/', 'video_info', 'download', 'queue', 'pause', 
-                  'resume', 'history', 'health', 'cleanup', 'list_downloads', 'open_']
-    if any(path.startswith(route) for route in api_routes):
-        return jsonify({'error': 'Not found'}), 404
-    
-    # Try to serve static file from React dist (use send_from_directory to prevent path traversal)
-    react_dist_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
-    if os.path.exists(react_dist_dir):
-        try:
-            return send_from_directory(react_dist_dir, path)
-        except (FileNotFoundError, ValueError):
-            # File not found or path traversal attempt - fall through to index.html
-            pass
-    
-    # For React Router - serve index.html for all other routes
-    react_dist = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', 'index.html')
-    if os.path.exists(react_dist):
-        return send_file(react_dist)
-    
-    return jsonify({'error': 'Not found'}), 404
 
 
 @app.route('/video_info', methods=['POST'])
@@ -1252,24 +1155,6 @@ def add_to_queue():
     format_id = sanitize_input(data.get('format_id', ''), max_length=50) if data.get('format_id') else None
     is_playlist = data.get('is_playlist', False)
     playlist_videos = data.get('playlist_videos', [])
-    throttle_speed = data.get('throttle_speed')
-    
-    # Validate throttle speed if provided
-    if throttle_speed is not None:
-        try:
-            throttle_speed = float(throttle_speed)
-            if throttle_speed < 0 or throttle_speed > 100:
-                return jsonify({
-                    'success': False,
-                    'error': 'Throttle speed must be between 0 and 100 MB/s',
-                    'error_type': 'invalid_request'
-                }), 400
-        except (ValueError, TypeError):
-            return jsonify({
-                'success': False,
-                'error': 'Invalid throttle speed value',
-                'error_type': 'invalid_request'
-            }), 400
     
     # Validate playlist_videos if provided
     if is_playlist and playlist_videos:
@@ -1339,7 +1224,6 @@ def add_to_queue():
                         'url': video_url,
                         'quality': quality,
                         'format_id': format_id,
-                        'throttle_speed': throttle_speed,
                         'client_ip': client_ip,
                         'added_at': datetime.now().isoformat(),
                         'estimated_size': None,
@@ -1391,7 +1275,6 @@ def add_to_queue():
             'url': url,  # Keep original URL for display
             'quality': quality,
             'format_id': format_id,
-            'throttle_speed': throttle_speed,
             'client_ip': client_ip,
             'added_at': datetime.now().isoformat(),
             'estimated_size': None  # Will be populated when video info is extracted
@@ -1803,43 +1686,6 @@ def open_file_in_folder(filename):
         return jsonify({'success': True, 'message': 'File location opened'})
     except Exception as e:
         return jsonify({'success': False, 'error': f'Error opening file: {str(e)}'}), 500
-
-
-@app.route('/history')
-def get_download_history():
-    """Get download history/analytics for the requesting client"""
-    client_ip = get_client_ip()
-    
-    with history_lock:
-        # Filter history by client IP
-        client_history = [
-            entry for entry in download_history 
-            if entry.get('client_ip') == client_ip
-        ]
-        
-        # Calculate analytics
-        total_downloads = len([e for e in client_history if e.get('status') == 'completed'])
-        total_failed = len([e for e in client_history if e.get('status') == 'failed'])
-        total_size = sum(e.get('file_size', 0) for e in client_history if e.get('status') == 'completed')
-        
-        # Get recent downloads (last 50)
-        recent_history = sorted(
-            client_history,
-            key=lambda x: x.get('completed_at') or x.get('failed_at') or '',
-            reverse=True
-        )[:50]
-        
-        return jsonify({
-            'success': True,
-            'history': recent_history,
-            'analytics': {
-                'total_downloads': total_downloads,
-                'total_failed': total_failed,
-                'success_rate': round((total_downloads / len(client_history) * 100) if client_history else 0, 2),
-                'total_size_gb': round(total_size / (1024 ** 3), 2),
-                'total_size_mb': round(total_size / (1024 ** 2), 2)
-            }
-        })
 
 
 @app.route('/cleanup', methods=['POST'])
