@@ -409,6 +409,27 @@ def _find_downloaded_file(video_title, downloads_dir):
     return None
 
 
+class ConcurrentDownloadTracker:
+    """Context manager to track concurrent downloads and ensure cleanup"""
+    def __init__(self, client_ip):
+        self.client_ip = client_ip
+        self.incremented = False
+    
+    def __enter__(self):
+        if self.client_ip:
+            with rate_limit_lock:
+                concurrent_downloads[self.client_ip] = concurrent_downloads.get(self.client_ip, 0) + 1
+                self.incremented = True
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.client_ip and self.incremented:
+            with rate_limit_lock:
+                if self.client_ip in concurrent_downloads:
+                    concurrent_downloads[self.client_ip] = max(0, concurrent_downloads[self.client_ip] - 1)
+        return False  # Don't suppress exceptions
+
+
 class ProgressHook:
     """Hook to track download progress"""
     def __init__(self, job_id):
