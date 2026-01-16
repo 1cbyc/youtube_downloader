@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["nodejs_20", "npm-10_x"]
+
+[phases.install]
+cmds = ["npm i"]
+
+[phases.build]
+cmds = ["npm run build && pip install -r requirements.txt"]

@@ -6,10 +6,10 @@ import { Input } from './components/ui/input'
 import { Select } from './components/ui/select'
 import { Card, CardHeader, CardTitle, CardContent } from './components/ui/card'
 import { Progress } from './components/ui/progress'
-import { videoApi } from './lib/api'
+import { videoApi } from '@/lib/api'
 import type { VideoInfo, DownloadJob, DownloadHistory, HistoryAnalytics } from './types'
 import { Moon, Sun, Play, Pause, Download, Eye, History, RefreshCw, FolderOpen, Gauge } from 'lucide-react'
-import { cn } from './lib/utils'
+import { cn } from '@/lib/utils'
 
 const queryClient = new QueryClient({
   defaultOptions: {
