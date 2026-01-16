@@ -18,6 +18,31 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_client_ip_for_limiter():
+    """Get client IP for rate limiting, handling proxy headers"""
+    forwarded_for = request.headers.get('X-Forwarded-For')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    real_ip = request.headers.get('X-Real-IP')
+    if real_ip:
+        return real_ip
+    return request.remote_addr or 'unknown'
+
+# File cleanup configuration - MUST be defined before get_downloads_folder() is called
+FILE_CLEANUP_ENABLED = os.environ.get('FILE_CLEANUP_ENABLED', 'true').lower() == 'true'
+FILE_MAX_AGE_HOURS = int(os.environ.get('FILE_MAX_AGE_HOURS', '1'))  # Default: 1 hour (aggressive cleanup for Railway)
+MAX_STORAGE_GB = float(os.environ.get('MAX_STORAGE_GB', '2.0'))  # Default: 2GB (conservative for Railway)
+AUTO_DELETE_AFTER_DOWNLOAD = os.environ.get('AUTO_DELETE_AFTER_DOWNLOAD', 'true').lower() == 'true'  # Delete file after user downloads it
+USE_EPHEMERAL_STORAGE = os.environ.get('USE_EPHEMERAL_STORAGE', 'true').lower() == 'true'  # Use /tmp for cloud (cleared on restart)
+
+# Rate limiting configuration
+MAX_DOWNLOADS_PER_HOUR = int(os.environ.get('MAX_DOWNLOADS_PER_HOUR', '10'))  # Max downloads per IP per hour
+MAX_CONCURRENT_DOWNLOADS = int(os.environ.get('MAX_CONCURRENT_DOWNLOADS', '3'))  # Max concurrent downloads per IP
+
+# File size limits
+MAX_FILE_SIZE_GB = float(os.environ.get('MAX_FILE_SIZE_GB', '2.0'))  # Max file size per download (2GB default)
+MAX_FILE_SIZE_BYTES = int(MAX_FILE_SIZE_GB * 1024 * 1024 * 1024)
+
 # Get the user's Downloads folder (works on Windows, macOS, and Linux)
 # For cloud deployment, use a downloads directory in the app folder
 def get_downloads_folder():
@@ -158,12 +183,10 @@ active_downloads = {}  # {job_id: thread} - track active download threads for ca
 queue_lock = threading.Lock()
 processing = False
 
-# File cleanup configuration
-FILE_CLEANUP_ENABLED = os.environ.get('FILE_CLEANUP_ENABLED', 'true').lower() == 'true'
-FILE_MAX_AGE_HOURS = int(os.environ.get('FILE_MAX_AGE_HOURS', '1'))  # Default: 1 hour (aggressive cleanup for Railway)
-MAX_STORAGE_GB = float(os.environ.get('MAX_STORAGE_GB', '2.0'))  # Default: 2GB (conservative for Railway)
-AUTO_DELETE_AFTER_DOWNLOAD = os.environ.get('AUTO_DELETE_AFTER_DOWNLOAD', 'true').lower() == 'true'  # Delete file after user downloads it
-USE_EPHEMERAL_STORAGE = os.environ.get('USE_EPHEMERAL_STORAGE', 'true').lower() == 'true'  # Use /tmp for cloud (cleared on restart)
+# Rate limiting tracking
+download_counts = {}  # {client_ip: {'count': int, 'reset_time': timestamp}}
+concurrent_downloads = {}  # {client_ip: int} - track concurrent downloads per IP
+rate_limit_lock = threading.Lock()
 
 
 def cleanup_old_files(downloads_dir=None, max_age_hours=None, max_storage_gb=None):
@@ -512,6 +535,23 @@ def download_video(job_id, url, quality='best', client_ip=None):
                 info = ydl.extract_info(normalized_url, download=False)
                 video_title = info.get('title', 'video')
                 
+                # Check file size before downloading
+                file_size = info.get('filesize') or info.get('filesize_approx', 0)
+                if file_size > MAX_FILE_SIZE_BYTES:
+                    file_size_gb = file_size / (1024 ** 3)
+                    max_size_gb = MAX_FILE_SIZE_GB
+                    error_msg = f'Video file is too large ({file_size_gb:.2f} GB). Maximum file size is {max_size_gb} GB. Please try downloading a lower quality version.'
+                    with queue_lock:
+                        if job_id in download_status:
+                            download_status[job_id]['status'] = 'failed'
+                            download_status[job_id]['error'] = error_msg
+                            download_status[job_id]['title'] = video_title
+                    # Decrement concurrent downloads
+                    with rate_limit_lock:
+                        if client_ip in concurrent_downloads:
+                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
+                    return False
+                
                 # Get source URL (direct video URL if available)
                 source_url = None
                 if 'url' in info:
@@ -531,6 +571,8 @@ def download_video(job_id, url, quality='best', client_ip=None):
                     download_status[job_id]['title'] = video_title
                     download_status[job_id]['progress'] = 10
                     download_status[job_id]['source_url'] = source_url
+                    if file_size:
+                        download_status[job_id]['estimated_size'] = file_size
                 
                 # Download the video with pause checks
                 # Note: yt-dlp doesn't support pause mid-download easily, 
@@ -547,12 +589,40 @@ def download_video(job_id, url, quality='best', client_ip=None):
                 filename = _find_downloaded_file(video_title, downloads_dir)
                 
                 if filename:
+                    # Check actual file size
+                    file_path = os.path.join(downloads_dir, filename)
+                    if os.path.exists(file_path):
+                        actual_size = os.path.getsize(file_path)
+                        if actual_size > MAX_FILE_SIZE_BYTES:
+                            # File exceeded limit after download, remove it
+                            try:
+                                os.remove(file_path)
+                            except:
+                                pass
+                            file_size_gb = actual_size / (1024 ** 3)
+                            max_size_gb = MAX_FILE_SIZE_GB
+                            error_msg = f'Downloaded file is too large ({file_size_gb:.2f} GB). Maximum file size is {max_size_gb} GB. The file has been removed.'
+                            with queue_lock:
+                                download_status[job_id]['status'] = 'failed'
+                                download_status[job_id]['error'] = error_msg
+                            # Decrement concurrent downloads
+                            with rate_limit_lock:
+                                if client_ip in concurrent_downloads:
+                                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
+                            return False
+                    
                     with queue_lock:
                         download_status[job_id]['status'] = 'completed'
                         download_status[job_id]['progress'] = 100
                         download_status[job_id]['filename'] = filename
                         download_status[job_id]['title'] = video_title
                         download_status[job_id]['completed_at'] = datetime.now().isoformat()
+                    
+                    # Decrement concurrent downloads on success
+                    with rate_limit_lock:
+                        if client_ip in concurrent_downloads:
+                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
+                    
                     # Trigger a refresh of downloads list (will be picked up by frontend polling)
                     return True
                 else:
@@ -601,9 +671,30 @@ def download_video(job_id, url, quality='best', client_ip=None):
             continue
     
     # All clients failed
+    # Improve error messages for common issues
+    error_msg = last_error or 'Unknown error'
+    error_lower = error_msg.lower()
+    
+    if 'private video' in error_lower or 'video unavailable' in error_lower:
+        user_error = 'This video is private or unavailable. It may have been removed or made private by the uploader.'
+    elif 'sign in to confirm your age' in error_lower or 'age-restricted' in error_lower:
+        user_error = 'This video is age-restricted and cannot be downloaded. Please try a different video.'
+    elif '403' in error_msg or 'forbidden' in error_lower:
+        user_error = 'Access denied. YouTube may be blocking this video. Please try again later or try a different video.'
+    elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
+        user_error = 'Network error occurred. Please check your internet connection and try again.'
+    else:
+        user_error = f'Download failed: {error_msg[:200]}'
+    
     with queue_lock:
         download_status[job_id]['status'] = 'failed'
-        download_status[job_id]['error'] = last_error or 'Unknown error'
+        download_status[job_id]['error'] = user_error
+    
+    # Decrement concurrent downloads
+    with rate_limit_lock:
+        if client_ip and client_ip in concurrent_downloads:
+            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
+    
     return False
 
 
@@ -768,6 +859,35 @@ def extract_video_title(job_id, url):
             continue
 
 
+def check_rate_limit(client_ip):
+    """Check if client has exceeded rate limits"""
+    current_time = time.time()
+    
+    with rate_limit_lock:
+        # Check hourly download limit
+        if client_ip not in download_counts:
+            download_counts[client_ip] = {'count': 0, 'reset_time': current_time + 3600}
+        
+        client_data = download_counts[client_ip]
+        
+        # Reset counter if hour has passed
+        if current_time >= client_data['reset_time']:
+            client_data['count'] = 0
+            client_data['reset_time'] = current_time + 3600
+        
+        # Check if limit exceeded
+        if client_data['count'] >= MAX_DOWNLOADS_PER_HOUR:
+            remaining_time = int(client_data['reset_time'] - current_time)
+            return False, f'Rate limit exceeded. You can download {MAX_DOWNLOADS_PER_HOUR} videos per hour. Please try again in {remaining_time // 60} minutes.'
+        
+        # Check concurrent downloads
+        concurrent = concurrent_downloads.get(client_ip, 0)
+        if concurrent >= MAX_CONCURRENT_DOWNLOADS:
+            return False, f'Too many concurrent downloads. Maximum {MAX_CONCURRENT_DOWNLOADS} downloads at once. Please wait for current downloads to complete.'
+        
+        return True, None
+
+
 @app.route('/download', methods=['POST'])
 def add_to_queue():
     """Add video to download queue
@@ -787,18 +907,51 @@ def add_to_queue():
     url = data.get('url', '').strip()
     quality = data.get('quality', 'best')
     
+    # Improved error messages
     if not url:
-        return jsonify({'success': False, 'error': 'Please provide a YouTube URL'}), 400
+        return jsonify({
+            'success': False, 
+            'error': 'No URL provided. Please paste a YouTube video URL in the input field.',
+            'error_type': 'missing_url'
+        }), 400
     
     # Check for YouTube URLs (supports all formats)
     if 'youtube.com' not in url and 'youtu.be' not in url:
-        return jsonify({'success': False, 'error': 'Please provide a valid YouTube URL (youtube.com or youtu.be)'}), 400
+        return jsonify({
+            'success': False, 
+            'error': 'Invalid URL. Please provide a valid YouTube URL. Supported formats: youtube.com/watch?v=..., youtu.be/..., or youtube.com/embed/...',
+            'error_type': 'invalid_url'
+        }), 400
+    
+    # Check rate limits
+    rate_ok, rate_error = check_rate_limit(client_ip)
+    if not rate_ok:
+        return jsonify({
+            'success': False,
+            'error': rate_error,
+            'error_type': 'rate_limit_exceeded'
+        }), 429
     
     # Normalize URL for consistent handling
-    normalized_url = normalize_youtube_url(url)
+    try:
+        normalized_url = normalize_youtube_url(url)
+    except Exception as e:
+        logger.error(f"Error normalizing URL {url}: {e}")
+        return jsonify({
+            'success': False,
+            'error': 'Unable to process this YouTube URL. Please check the URL and try again.',
+            'error_type': 'url_processing_error'
+        }), 400
     
     # Generate unique job ID
     job_id = str(uuid.uuid4())
+    
+    # Increment download count
+    with rate_limit_lock:
+        if client_ip not in download_counts:
+            download_counts[client_ip] = {'count': 0, 'reset_time': time.time() + 3600}
+        download_counts[client_ip]['count'] += 1
+        concurrent_downloads[client_ip] = concurrent_downloads.get(client_ip, 0) + 1
     
     with queue_lock:
         download_queue.append((job_id, normalized_url, quality, client_ip))
@@ -811,7 +964,8 @@ def add_to_queue():
             'url': url,  # Keep original URL for display
             'quality': quality,
             'client_ip': client_ip,
-            'added_at': datetime.now().isoformat()
+            'added_at': datetime.now().isoformat(),
+            'estimated_size': None  # Will be populated when video info is extracted
         }
     
     # Extract title immediately in background
@@ -1081,25 +1235,23 @@ def download_file(filename):
         return jsonify({'error': 'File not found'}), 404
     
     try:
-        # Send file to user
-        response = send_file(file_path, as_attachment=True)
-        
-        # If auto-delete is enabled, delete file after sending
-        # This saves storage on Railway by removing files immediately after download
+        # If auto-delete is enabled, use Flask's after_this_request to delete file after response completes
+        # This ensures the file is only deleted after the response is fully sent
         if AUTO_DELETE_AFTER_DOWNLOAD:
-            # Delete in background thread to not block response
-            def delete_after_send():
+            from flask import after_this_request
+            
+            @after_this_request
+            def delete_file_after_response(response):
                 try:
-                    time.sleep(1)  # Small delay to ensure file is sent
                     if os.path.exists(file_path):
                         os.remove(file_path)
                         logger.info(f"Auto-deleted file after download: {filename}")
                 except Exception as e:
                     logger.warning(f"Could not auto-delete file {file_path}: {e}")
-            
-            delete_thread = threading.Thread(target=delete_after_send, daemon=True)
-            delete_thread.start()
+                return response
         
+        # Send file to user
+        response = send_file(file_path, as_attachment=True)
         return response
     except Exception as e:
         logger.error(f"Error serving file {file_path}: {e}")
