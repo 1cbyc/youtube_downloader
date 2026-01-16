@@ -27,9 +27,18 @@
                             placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..." 
                             required
                         >
-                        <button type="button" id="previewBtn" class="btn-preview" style="margin-top: 10px;">
-                            <i class="fas fa-eye"></i> Preview
+                        <button type="button" id="previewBtn" class="btn-preview" style="margin-top: 10px; padding: 10px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; transition: all 0.3s ease; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                            <i class="fas fa-eye"></i> Preview Video
                         </button>
+                        <style>
+                            #previewBtn:hover {
+                                transform: translateY(-2px);
+                                box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+                            }
+                            #previewBtn:active {
+                                transform: translateY(0);
+                            }
+                        </style>
                     </div>
                     
                     <div id="videoPreview" style="display: none; margin: 20px 0; padding: 15px; background: #f5f5f5; border-radius: 8px;">
@@ -92,7 +101,13 @@
         let updateInterval;
         const activeJobs = new Set();
         let currentVideoInfo = null;
-        let savedProgress = JSON.parse(localStorage.getItem('downloadProgress') || '{}');
+        let savedProgress = {};
+        try {
+            savedProgress = JSON.parse(localStorage.getItem('downloadProgress') || '{}');
+        } catch (e) {
+            console.error('Failed to parse saved progress:', e);
+            localStorage.removeItem('downloadProgress');
+        }
 
         // Load saved progress on page load
         function loadSavedProgress() {
