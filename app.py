@@ -10,13 +10,52 @@ import uuid
 import re
 from datetime import datetime, timedelta
 import logging
+from urllib.parse import urlparse, parse_qs
+import mimetypes
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())  # For CSRF protection
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Security functions (defined early for use throughout the app)
+def validate_file_type(file_path):
+    """Validate that file is a valid video/audio file"""
+    allowed_extensions = {'.mp4', '.webm', '.mkv', '.m4a', '.mp3', '.ogg', '.flac', '.wav', '.avi', '.mov', '.flv'}
+    allowed_mime_types = {
+        'video/mp4', 'video/webm', 'video/x-matroska', 'video/quicktime',
+        'audio/mpeg', 'audio/mp4', 'audio/ogg', 'audio/flac', 'audio/wav',
+        'video/x-msvideo', 'video/x-flv'
+    }
+    
+    # Check extension
+    _, ext = os.path.splitext(file_path.lower())
+    if ext not in allowed_extensions:
+        return False
+    
+    # Check MIME type
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type and mime_type not in allowed_mime_types:
+        return False
+    
+    return True
+
+
+def log_security_event(event_type, details, client_ip=None):
+    """Log security-related events"""
+    try:
+        if not client_ip:
+            from flask import request
+            client_ip = get_client_ip() if hasattr(request, 'remote_addr') else 'unknown'
+        
+        logger.warning(f"SECURITY EVENT [{event_type}] from {client_ip}: {details}")
+        # In production, you might want to send this to a security monitoring system
+    except Exception as e:
+        logger.error(f"Error logging security event: {e}")
+
 
 def get_client_ip_for_limiter():
     """Get client IP for rate limiting, handling proxy headers"""
@@ -370,6 +409,27 @@ def _find_downloaded_file(video_title, downloads_dir):
     return None
 
 
+class ConcurrentDownloadTracker:
+    """Context manager to track concurrent downloads and ensure cleanup"""
+    def __init__(self, client_ip):
+        self.client_ip = client_ip
+        self.incremented = False
+    
+    def __enter__(self):
+        if self.client_ip:
+            with rate_limit_lock:
+                concurrent_downloads[self.client_ip] = concurrent_downloads.get(self.client_ip, 0) + 1
+                self.incremented = True
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.client_ip and self.incremented:
+            with rate_limit_lock:
+                if self.client_ip in concurrent_downloads:
+                    concurrent_downloads[self.client_ip] = max(0, concurrent_downloads[self.client_ip] - 1)
+        return False  # Don't suppress exceptions
+
+
 class ProgressHook:
     """Hook to track download progress"""
     def __init__(self, job_id):
@@ -428,41 +488,43 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
         client_ip: IP address of the client requesting the download
         format_id: Specific format ID to download (optional)
     """
-    try:
-        # Get client-specific downloads folder with error handling
-        if client_ip:
-            downloads_dir = get_client_downloads_folder(client_ip)
-        else:
-            # Fallback to default folder for backward compatibility
-            downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
-            try:
-                os.makedirs(downloads_dir, exist_ok=True)
-            except (OSError, PermissionError) as e:
-                logger.error(f"Cannot create downloads directory {downloads_dir}: {e}")
-                with queue_lock:
-                    if job_id in download_status:
-                        download_status[job_id]['status'] = 'failed'
-                        download_status[job_id]['error'] = f'Cannot create downloads directory: {str(e)}'
-                return False
-        
-        # Check available disk space (for cloud environments)
+    # Use context manager to track concurrent downloads and ensure cleanup on all exit paths
+    with ConcurrentDownloadTracker(client_ip):
         try:
-            stat = os.statvfs(downloads_dir)
-            free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
-            if free_space_gb < 0.5:  # Less than 500MB free
-                logger.warning(f"Low disk space: {free_space_gb:.2f} GB free")
-                # Trigger cleanup
-                cleanup_old_files(downloads_dir)
-        except (OSError, AttributeError):
-            # statvfs not available on Windows, skip check
-            pass
-    except Exception as e:
-        logger.error(f"Error setting up downloads directory: {e}")
-        with queue_lock:
-            if job_id in download_status:
-                download_status[job_id]['status'] = 'failed'
-                download_status[job_id]['error'] = f'Setup error: {str(e)}'
-        return False
+            # Get client-specific downloads folder with error handling
+            if client_ip:
+                downloads_dir = get_client_downloads_folder(client_ip)
+            else:
+                # Fallback to default folder for backward compatibility
+                downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
+                try:
+                    os.makedirs(downloads_dir, exist_ok=True)
+                except (OSError, PermissionError) as e:
+                    logger.error(f"Cannot create downloads directory {downloads_dir}: {e}")
+                    with queue_lock:
+                        if job_id in download_status:
+                            download_status[job_id]['status'] = 'failed'
+                            download_status[job_id]['error'] = f'Cannot create downloads directory: {str(e)}'
+                    return False
+            
+            # Check available disk space (for cloud environments)
+            try:
+                stat = os.statvfs(downloads_dir)
+                free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+                if free_space_gb < 0.5:  # Less than 500MB free
+                    logger.warning(f"Low disk space: {free_space_gb:.2f} GB free")
+                    # Trigger cleanup
+                    cleanup_old_files(downloads_dir)
+            except (OSError, AttributeError):
+                # statvfs not available on Windows, skip check
+                pass
+        except Exception as e:
+            logger.error(f"Error setting up downloads directory: {e}")
+            with queue_lock:
+                if job_id in download_status:
+                    download_status[job_id]['status'] = 'failed'
+                    download_status[job_id]['error'] = f'Setup error: {str(e)}'
+            return False
     
     # Check if paused before starting
     with queue_lock:
@@ -550,10 +612,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                             download_status[job_id]['status'] = 'failed'
                             download_status[job_id]['error'] = error_msg
                             download_status[job_id]['title'] = video_title
-                    # Decrement concurrent downloads
-                    with rate_limit_lock:
-                        if client_ip in concurrent_downloads:
-                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                     return False
                 
                 # Get source URL (direct video URL if available)
@@ -609,10 +667,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                             with queue_lock:
                                 download_status[job_id]['status'] = 'failed'
                                 download_status[job_id]['error'] = error_msg
-                            # Decrement concurrent downloads
-                            with rate_limit_lock:
-                                if client_ip in concurrent_downloads:
-                                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                             return False
                     
                     with queue_lock:
@@ -621,11 +675,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                         download_status[job_id]['filename'] = filename
                         download_status[job_id]['title'] = video_title
                         download_status[job_id]['completed_at'] = datetime.now().isoformat()
-                    
-                    # Decrement concurrent downloads on success
-                    with rate_limit_lock:
-                        if client_ip in concurrent_downloads:
-                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                     
                     # Trigger a refresh of downloads list (will be picked up by frontend polling)
                     return True
@@ -693,11 +742,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
     with queue_lock:
         download_status[job_id]['status'] = 'failed'
         download_status[job_id]['error'] = user_error
-    
-    # Decrement concurrent downloads
-    with rate_limit_lock:
-        if client_ip and client_ip in concurrent_downloads:
-            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
     
     return False
 
@@ -784,17 +828,21 @@ def index():
 def get_video_info():
     """Get video information including thumbnail, formats, and metadata"""
     data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'error': 'Invalid request data'}), 400
+    
     url = data.get('url', '').strip()
     
     if not url:
         return jsonify({'success': False, 'error': 'No URL provided'}), 400
     
-    # Check for YouTube URLs
-    if 'youtube.com' not in url and 'youtu.be' not in url:
-        return jsonify({'success': False, 'error': 'Invalid YouTube URL'}), 400
+    # Strictly validate YouTube URL
+    is_valid, video_id, is_playlist_detected, normalized_url_check = validate_youtube_url(url)
+    if not is_valid:
+        return jsonify({'success': False, 'error': 'Invalid YouTube URL format'}), 400
     
     try:
-        normalized_url = normalize_youtube_url(url)
+        normalized_url = normalized_url_check
         
         # Check if it's a playlist
         is_playlist = 'playlist' in url.lower() or 'list=' in url.lower()
@@ -857,8 +905,9 @@ def get_video_info():
                                 'format_note': fmt.get('format_note', ''),
                             })
                 
-                # Get thumbnail
-                thumbnail = info.get('thumbnail') or info.get('thumbnails', [{}])[0].get('url', '')
+                # Get thumbnail (fix IndexError if thumbnails is empty list)
+                thumbnails = info.get('thumbnails') or [{}]
+                thumbnail = info.get('thumbnail') or (thumbnails[0].get('url', '') if thumbnails else '')
                 
                 return jsonify({
                     'success': True,
@@ -891,32 +940,83 @@ def get_video_info():
         }), 500
 
 
+def validate_youtube_url(url):
+    """
+    Strictly validate YouTube URL format and extract video/playlist ID.
+    Returns (is_valid, video_id, is_playlist, normalized_url)
+    """
+    if not url or not isinstance(url, str):
+        return False, None, False, None
+    
+    # Remove whitespace
+    url = url.strip()
+    
+    # Must be HTTP/HTTPS
+    if not url.startswith(('http://', 'https://')):
+        return False, None, False, None
+    
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, None, False, None
+    
+    # Must be YouTube domain
+    if 'youtube.com' not in parsed.netloc and 'youtu.be' not in parsed.netloc:
+        return False, None, False, None
+    
+    # Extract video ID or playlist ID
+    video_id = None
+    playlist_id = None
+    is_playlist = False
+    
+    if 'youtu.be' in parsed.netloc:
+        # Short URL format: youtu.be/VIDEO_ID
+        video_id = parsed.path.lstrip('/').split('?')[0]
+        if len(video_id) != 11 or not re.match(r'^[a-zA-Z0-9_-]{11}$', video_id):
+            return False, None, False, None
+    elif 'youtube.com' in parsed.netloc:
+        # Standard URL format
+        query_params = parse_qs(parsed.query)
+        
+        # Check for playlist
+        if 'list' in query_params:
+            playlist_id = query_params['list'][0]
+            is_playlist = True
+        
+        # Get video ID
+        if 'v' in query_params:
+            video_id = query_params['v'][0]
+        elif '/embed/' in parsed.path:
+            video_id = parsed.path.split('/embed/')[-1].split('?')[0]
+        elif '/v/' in parsed.path:
+            video_id = parsed.path.split('/v/')[-1].split('?')[0]
+        
+        # Validate video ID format
+        if video_id and (len(video_id) != 11 or not re.match(r'^[a-zA-Z0-9_-]{11}$', video_id)):
+            return False, None, False, None
+    
+    # Build normalized URL
+    if is_playlist and playlist_id:
+        normalized_url = f'https://www.youtube.com/playlist?list={playlist_id}'
+        if video_id:
+            normalized_url = f'https://www.youtube.com/watch?v={video_id}&list={playlist_id}'
+    elif video_id:
+        normalized_url = f'https://www.youtube.com/watch?v={video_id}'
+    else:
+        return False, None, False, None
+    
+    return True, video_id, is_playlist, normalized_url
+
+
 def normalize_youtube_url(url):
     """
-    Normalize YouTube URL to handle all formats:
-    - https://www.youtube.com/watch?v=VIDEO_ID
-    - https://youtube.com/watch?v=VIDEO_ID
-    - https://youtu.be/VIDEO_ID
-    - https://youtu.be/VIDEO_ID?si=...
-    - https://www.youtube.com/embed/VIDEO_ID
-    - etc.
-    
-    yt-dlp handles all these formats, but we normalize for consistency.
+    Normalize YouTube URL to handle all formats.
+    Uses strict validation.
     """
-    # Extract video ID from any YouTube URL format
-    patterns = [
-        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})',
-        r'youtube\.com\/.*[?&]v=([a-zA-Z0-9_-]{11})',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            video_id = match.group(1)
-            # Return normalized URL (yt-dlp will handle it fine, but this is cleaner)
-            return f'https://www.youtube.com/watch?v={video_id}'
-    
-    # If no pattern matches, return original URL (yt-dlp might still handle it)
+    is_valid, video_id, is_playlist, normalized_url = validate_youtube_url(url)
+    if is_valid:
+        return normalized_url
+    # Fallback for edge cases (let yt-dlp handle it)
     return url
 
 
@@ -997,14 +1097,33 @@ def check_rate_limit(client_ip):
         # Check if limit exceeded
         if client_data['count'] >= MAX_DOWNLOADS_PER_HOUR:
             remaining_time = int(client_data['reset_time'] - current_time)
+            log_security_event('RATE_LIMIT_EXCEEDED', f'Hourly limit: {client_data["count"]}/{MAX_DOWNLOADS_PER_HOUR}', client_ip)
             return False, f'Rate limit exceeded. You can download {MAX_DOWNLOADS_PER_HOUR} videos per hour. Please try again in {remaining_time // 60} minutes.'
         
         # Check concurrent downloads
         concurrent = concurrent_downloads.get(client_ip, 0)
         if concurrent >= MAX_CONCURRENT_DOWNLOADS:
+            log_security_event('CONCURRENT_LIMIT_EXCEEDED', f'Concurrent: {concurrent}/{MAX_CONCURRENT_DOWNLOADS}', client_ip)
             return False, f'Too many concurrent downloads. Maximum {MAX_CONCURRENT_DOWNLOADS} downloads at once. Please wait for current downloads to complete.'
         
         return True, None
+
+
+def sanitize_input(text, max_length=500):
+    """Sanitize user input to prevent XSS and injection attacks"""
+    if not text or not isinstance(text, str):
+        return ''
+    
+    # Limit length
+    text = text[:max_length]
+    
+    # Remove potentially dangerous characters
+    text = re.sub(r'[<>"\']', '', text)
+    
+    # Remove control characters
+    text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+    
+    return text.strip()
 
 
 @app.route('/download', methods=['POST'])
@@ -1022,12 +1141,30 @@ def add_to_queue():
     # Get client IP from request (handles proxy headers for cloud)
     client_ip = get_client_ip()
     
+    # Validate and sanitize input
     data = request.get_json()
-    url = data.get('url', '').strip()
-    quality = data.get('quality', 'best')
-    format_id = data.get('format_id')
+    if not data or not isinstance(data, dict):
+        return jsonify({
+            'success': False,
+            'error': 'Invalid request data',
+            'error_type': 'invalid_request'
+        }), 400
+    
+    url = sanitize_input(data.get('url', ''), max_length=500)
+    quality = sanitize_input(data.get('quality', 'best'), max_length=20)
+    format_id = sanitize_input(data.get('format_id', ''), max_length=50) if data.get('format_id') else None
     is_playlist = data.get('is_playlist', False)
     playlist_videos = data.get('playlist_videos', [])
+    
+    # Validate playlist_videos if provided
+    if is_playlist and playlist_videos:
+        if not isinstance(playlist_videos, list) or len(playlist_videos) > 100:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid playlist data',
+                'error_type': 'invalid_request'
+            }), 400
+        playlist_videos = [sanitize_input(v, max_length=500) for v in playlist_videos if v]
     
     # Improved error messages
     if not url:
@@ -1037,11 +1174,12 @@ def add_to_queue():
             'error_type': 'missing_url'
         }), 400
     
-    # Check for YouTube URLs (supports all formats)
-    if 'youtube.com' not in url and 'youtu.be' not in url:
+    # Strictly validate YouTube URL
+    is_valid, video_id, is_playlist_detected, normalized_url = validate_youtube_url(url)
+    if not is_valid:
         return jsonify({
             'success': False, 
-            'error': 'Invalid URL. Please provide a valid YouTube URL. Supported formats: youtube.com/watch?v=..., youtu.be/..., or youtube.com/embed/...',
+            'error': 'Invalid YouTube URL. Please provide a valid YouTube video or playlist URL.',
             'error_type': 'invalid_url'
         }), 400
     
@@ -1068,12 +1206,12 @@ def add_to_queue():
                     # Skip remaining videos if rate limit exceeded
                     break
                 
-                # Increment download count for each video
+                # Increment download count for each video (but NOT concurrent_downloads - that's when download starts)
                 with rate_limit_lock:
                     if client_ip not in download_counts:
                         download_counts[client_ip] = {'count': 0, 'reset_time': time.time() + 3600}
                     download_counts[client_ip]['count'] += 1
-                    concurrent_downloads[client_ip] = concurrent_downloads.get(client_ip, 0) + 1
+                    # Note: concurrent_downloads is incremented when download actually starts, not when queued
                 
                 with queue_lock:
                     download_queue.append((job_id, normalized_video_url, quality, client_ip))
@@ -1099,6 +1237,10 @@ def add_to_queue():
                 title_thread.start()
             except Exception as e:
                 logger.error(f"Error adding playlist video {video_url}: {e}")
+                # Rollback download count if it was incremented
+                with rate_limit_lock:
+                    if client_ip in download_counts and download_counts[client_ip]['count'] > 0:
+                        download_counts[client_ip]['count'] = max(0, download_counts[client_ip]['count'] - 1)
                 continue
         
         return jsonify({
@@ -1109,16 +1251,8 @@ def add_to_queue():
         })
     
     # Single video download
-    # Normalize URL for consistent handling
-    try:
-        normalized_url = normalize_youtube_url(url)
-    except Exception as e:
-        logger.error(f"Error normalizing URL {url}: {e}")
-        return jsonify({
-            'success': False,
-            'error': 'Unable to process this YouTube URL. Please check the URL and try again.',
-            'error_type': 'url_processing_error'
-        }), 400
+    # Normalize URL (already validated above)
+    normalized_url = normalize_youtube_url(url)
     
     # Generate unique job ID
     job_id = str(uuid.uuid4())
@@ -1128,7 +1262,7 @@ def add_to_queue():
         if client_ip not in download_counts:
             download_counts[client_ip] = {'count': 0, 'reset_time': time.time() + 3600}
         download_counts[client_ip]['count'] += 1
-        concurrent_downloads[client_ip] = concurrent_downloads.get(client_ip, 0) + 1
+        # Note: concurrent_downloads is incremented when download actually starts, not when queued
     
     with queue_lock:
         download_queue.append((job_id, normalized_url, quality, client_ip))
@@ -1404,13 +1538,32 @@ def get_queue():
 
 @app.route('/download_file/<filename>')
 def download_file(filename):
-    """Serve downloaded file from client's folder and optionally delete after download"""
+    """Serve downloaded file from client's folder with security validation"""
     client_ip = get_client_ip()
     downloads_dir = get_client_downloads_folder(client_ip)
-    file_path = os.path.join(downloads_dir, secure_filename(filename))
+    
+    # Sanitize filename to prevent directory traversal
+    safe_filename = secure_filename(filename)
+    if not safe_filename or safe_filename != filename:
+        log_security_event('INVALID_FILENAME', f'Filename: {filename}', client_ip)
+        return jsonify({'error': 'Invalid filename'}), 400
+    
+    file_path = os.path.join(downloads_dir, safe_filename)
+    
+    # Prevent directory traversal
+    file_path = os.path.abspath(file_path)
+    downloads_dir_abs = os.path.abspath(downloads_dir)
+    if not file_path.startswith(downloads_dir_abs):
+        log_security_event('DIRECTORY_TRAVERSAL', f'Path: {file_path}, Expected: {downloads_dir_abs}', client_ip)
+        return jsonify({'error': 'Invalid file path'}), 403
     
     if not os.path.exists(file_path):
         return jsonify({'error': 'File not found'}), 404
+    
+    # Validate file type
+    if not validate_file_type(file_path):
+        log_security_event('INVALID_FILE_TYPE', f'Filename: {filename}', client_ip)
+        return jsonify({'error': 'Invalid file type'}), 403
     
     try:
         # If auto-delete is enabled, use Flask's after_this_request to delete file after response completes
@@ -1428,8 +1581,11 @@ def download_file(filename):
                     logger.warning(f"Could not auto-delete file {file_path}: {e}")
                 return response
         
-        # Send file to user
+        # Send file to user with secure headers
         response = send_file(file_path, as_attachment=True)
+        # Add security headers
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['Content-Disposition'] = f'attachment; filename="{safe_filename}"'
         return response
     except Exception as e:
         logger.error(f"Error serving file {file_path}: {e}")
