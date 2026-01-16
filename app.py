@@ -25,7 +25,7 @@ def get_downloads_folder():
     import platform
     
     # Check if we're in a cloud environment (Railway, Heroku, etc.)
-    # Use environment variable or default to app directory
+    # Use environment variable or default to ephemeral storage
     cloud_downloads = os.environ.get('DOWNLOADS_DIR')
     if cloud_downloads:
         try:
@@ -54,16 +54,27 @@ def get_downloads_folder():
     )
     
     if is_cloud:
-        # Default to app directory for cloud deployments
+        # For cloud: use ephemeral storage (/tmp) by default to save storage costs
+        # Files in /tmp are cleared on container restart, saving Railway storage
+        if USE_EPHEMERAL_STORAGE:
+            tmp_downloads = '/tmp/downloads'
+            try:
+                os.makedirs(tmp_downloads, exist_ok=True)
+                logger.info(f"Using ephemeral storage: {tmp_downloads} (files cleared on restart)")
+                return tmp_downloads
+            except Exception as e:
+                logger.error(f"Cannot create /tmp/downloads: {e}")
+        
+        # Fallback to app directory if ephemeral storage disabled
         app_dir = os.path.dirname(os.path.abspath(__file__))
         cloud_default = os.path.join(app_dir, 'downloads')
         try:
             os.makedirs(cloud_default, exist_ok=True)
-            logger.info(f"Using default cloud downloads directory: {cloud_default}")
+            logger.info(f"Using persistent cloud downloads directory: {cloud_default}")
             return cloud_default
         except Exception as e:
             logger.error(f"Cannot create cloud downloads directory {cloud_default}: {e}")
-            # Fallback to /tmp as last resort
+            # Last resort: use /tmp
             tmp_downloads = '/tmp/downloads'
             os.makedirs(tmp_downloads, exist_ok=True)
             logger.warning(f"Using /tmp/downloads as fallback")
@@ -149,8 +160,10 @@ processing = False
 
 # File cleanup configuration
 FILE_CLEANUP_ENABLED = os.environ.get('FILE_CLEANUP_ENABLED', 'true').lower() == 'true'
-FILE_MAX_AGE_HOURS = int(os.environ.get('FILE_MAX_AGE_HOURS', '24'))  # Default: 24 hours
-MAX_STORAGE_GB = float(os.environ.get('MAX_STORAGE_GB', '10.0'))  # Default: 10GB
+FILE_MAX_AGE_HOURS = int(os.environ.get('FILE_MAX_AGE_HOURS', '1'))  # Default: 1 hour (aggressive cleanup for Railway)
+MAX_STORAGE_GB = float(os.environ.get('MAX_STORAGE_GB', '2.0'))  # Default: 2GB (conservative for Railway)
+AUTO_DELETE_AFTER_DOWNLOAD = os.environ.get('AUTO_DELETE_AFTER_DOWNLOAD', 'true').lower() == 'true'  # Delete file after user downloads it
+USE_EPHEMERAL_STORAGE = os.environ.get('USE_EPHEMERAL_STORAGE', 'true').lower() == 'true'  # Use /tmp for cloud (cleared on restart)
 
 
 def cleanup_old_files(downloads_dir=None, max_age_hours=None, max_storage_gb=None):
@@ -262,6 +275,8 @@ if FILE_CLEANUP_ENABLED:
     cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
     cleanup_thread.start()
     logger.info(f"File cleanup enabled: max age {FILE_MAX_AGE_HOURS}h, max storage {MAX_STORAGE_GB}GB")
+    logger.info(f"Auto-delete after download: {AUTO_DELETE_AFTER_DOWNLOAD}")
+    logger.info(f"Ephemeral storage: {USE_EPHEMERAL_STORAGE}")
 
 
 def _get_format_selector(quality):
@@ -1057,13 +1072,38 @@ def get_queue():
 
 @app.route('/download_file/<filename>')
 def download_file(filename):
-    """Serve downloaded file from client's folder"""
+    """Serve downloaded file from client's folder and optionally delete after download"""
     client_ip = get_client_ip()
     downloads_dir = get_client_downloads_folder(client_ip)
     file_path = os.path.join(downloads_dir, secure_filename(filename))
-    if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True)
-    return jsonify({'error': 'File not found'}), 404
+    
+    if not os.path.exists(file_path):
+        return jsonify({'error': 'File not found'}), 404
+    
+    try:
+        # Send file to user
+        response = send_file(file_path, as_attachment=True)
+        
+        # If auto-delete is enabled, delete file after sending
+        # This saves storage on Railway by removing files immediately after download
+        if AUTO_DELETE_AFTER_DOWNLOAD:
+            # Delete in background thread to not block response
+            def delete_after_send():
+                try:
+                    time.sleep(1)  # Small delay to ensure file is sent
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.info(f"Auto-deleted file after download: {filename}")
+                except Exception as e:
+                    logger.warning(f"Could not auto-delete file {file_path}: {e}")
+            
+            delete_thread = threading.Thread(target=delete_after_send, daemon=True)
+            delete_thread.start()
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        return jsonify({'error': f'Error serving file: {str(e)}'}), 500
 
 
 @app.route('/list_downloads')
@@ -1199,7 +1239,11 @@ def health_check():
             'status': 'healthy',
             'downloads_dir': downloads_dir,
             'disk_info': disk_info,
-            'cleanup_enabled': FILE_CLEANUP_ENABLED
+            'cleanup_enabled': FILE_CLEANUP_ENABLED,
+            'auto_delete_after_download': AUTO_DELETE_AFTER_DOWNLOAD,
+            'ephemeral_storage': USE_EPHEMERAL_STORAGE,
+            'max_age_hours': FILE_MAX_AGE_HOURS,
+            'max_storage_gb': MAX_STORAGE_GB
         })
     except Exception as e:
         logger.error(f"Health check failed: {e}")
