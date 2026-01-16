@@ -166,6 +166,7 @@ cython_debug/
 *.md
 *.sh
 *.txt
+!runtime.txt
 
 # .NET / C# Build Artifacts
 ## Build results
