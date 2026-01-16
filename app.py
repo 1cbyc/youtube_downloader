@@ -667,10 +667,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                             with queue_lock:
                                 download_status[job_id]['status'] = 'failed'
                                 download_status[job_id]['error'] = error_msg
-                            # Decrement concurrent downloads
-                            with rate_limit_lock:
-                                if client_ip in concurrent_downloads:
-                                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                             return False
                     
                     with queue_lock:
