@@ -415,7 +415,7 @@ class ProgressHook:
                     download_status[self.job_id]['status'] = 'downloading'
 
 
-def download_video(job_id, url, quality='best', client_ip=None):
+def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
     """
     Download video from YouTube URL using multiple fallback strategies.
     Updates download_status dict with progress.
@@ -426,6 +426,7 @@ def download_video(job_id, url, quality='best', client_ip=None):
         url: YouTube URL to download
         quality: Video quality ('best' or 'worst')
         client_ip: IP address of the client requesting the download
+        format_id: Specific format ID to download (optional)
     """
     try:
         # Get client-specific downloads folder with error handling
@@ -507,9 +508,12 @@ def download_video(job_id, url, quality='best', client_ip=None):
             # Check if partial file exists for resume
             normalized_url = normalize_youtube_url(url)
             
+            # Format selection: use format_id if provided, otherwise use quality selector
+            format_selector = format_id if format_id else _get_format_selector(quality)
+            
             ydl_opts = {
                 'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
-                'format': _get_format_selector(quality),
+                'format': format_selector,
                 'extractor_args': {
                     'youtube': {
                         'player_client': [client],
@@ -738,7 +742,11 @@ def process_queue():
                         processing = False
                         continue
                 
-                download_video(job_id, url, quality, client_ip)
+                # Get format_id from download_status if available
+                format_id = None
+                if job_id in download_status:
+                    format_id = download_status[job_id].get('format_id')
+                download_video(job_id, url, quality, client_ip, format_id)
             except KeyboardInterrupt:
                 # Handle pause signal
                 with queue_lock:
@@ -770,6 +778,117 @@ queue_thread.start()
 def index():
     """Main page"""
     return render_template('index.html')
+
+
+@app.route('/video_info', methods=['POST'])
+def get_video_info():
+    """Get video information including thumbnail, formats, and metadata"""
+    data = request.get_json()
+    url = data.get('url', '').strip()
+    
+    if not url:
+        return jsonify({'success': False, 'error': 'No URL provided'}), 400
+    
+    # Check for YouTube URLs
+    if 'youtube.com' not in url and 'youtu.be' not in url:
+        return jsonify({'success': False, 'error': 'Invalid YouTube URL'}), 400
+    
+    try:
+        normalized_url = normalize_youtube_url(url)
+        
+        # Check if it's a playlist
+        is_playlist = 'playlist' in url.lower() or 'list=' in url.lower()
+        
+        if is_playlist:
+            # Extract playlist info
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'skip_download': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(normalized_url, download=False)
+                
+                playlist_title = info.get('title', 'Playlist')
+                entries = info.get('entries', [])
+                
+                videos = []
+                for entry in entries[:50]:  # Limit to first 50 videos
+                    if entry:
+                        video_id = entry.get('id') or entry.get('url', '').split('v=')[-1].split('&')[0]
+                        videos.append({
+                            'id': video_id,
+                            'title': entry.get('title', 'Unknown'),
+                            'url': f"https://www.youtube.com/watch?v={video_id}"
+                        })
+                
+                return jsonify({
+                    'success': True,
+                    'is_playlist': True,
+                    'title': playlist_title,
+                    'video_count': len(videos),
+                    'videos': videos
+                })
+        else:
+            # Single video info
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'skip_download': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(normalized_url, download=False)
+                
+                # Get available formats
+                formats = []
+                if 'formats' in info:
+                    for fmt in info['formats']:
+                        if fmt.get('vcodec') != 'none' or fmt.get('acodec') != 'none':  # Has video or audio
+                            formats.append({
+                                'format_id': fmt.get('format_id'),
+                                'ext': fmt.get('ext', 'unknown'),
+                                'resolution': fmt.get('resolution', 'unknown'),
+                                'filesize': fmt.get('filesize') or fmt.get('filesize_approx', 0),
+                                'vcodec': fmt.get('vcodec', 'unknown'),
+                                'acodec': fmt.get('acodec', 'unknown'),
+                                'format_note': fmt.get('format_note', ''),
+                            })
+                
+                # Get thumbnail
+                thumbnail = info.get('thumbnail') or info.get('thumbnails', [{}])[0].get('url', '')
+                
+                return jsonify({
+                    'success': True,
+                    'is_playlist': False,
+                    'title': info.get('title', 'Unknown'),
+                    'thumbnail': thumbnail,
+                    'duration': info.get('duration', 0),
+                    'uploader': info.get('uploader', 'Unknown'),
+                    'view_count': info.get('view_count', 0),
+                    'formats': formats[:20],  # Limit to first 20 formats
+                    'filesize': info.get('filesize') or info.get('filesize_approx', 0)
+                })
+    
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        if 'Private video' in error_msg or 'Video unavailable' in error_msg:
+            return jsonify({
+                'success': False,
+                'error': 'This video is private or unavailable'
+            }), 400
+        return jsonify({
+            'success': False,
+            'error': f'Unable to fetch video info: {error_msg[:200]}'
+        }), 400
+    except Exception as e:
+        logger.error(f"Error getting video info: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Error processing video: {str(e)[:200]}'
+        }), 500
 
 
 def normalize_youtube_url(url):
@@ -906,6 +1025,9 @@ def add_to_queue():
     data = request.get_json()
     url = data.get('url', '').strip()
     quality = data.get('quality', 'best')
+    format_id = data.get('format_id')
+    is_playlist = data.get('is_playlist', False)
+    playlist_videos = data.get('playlist_videos', [])
     
     # Improved error messages
     if not url:
@@ -932,6 +1054,61 @@ def add_to_queue():
             'error_type': 'rate_limit_exceeded'
         }), 429
     
+    # Handle playlist downloads
+    if is_playlist and playlist_videos:
+        job_ids = []
+        for video_url in playlist_videos:
+            try:
+                normalized_video_url = normalize_youtube_url(video_url)
+                job_id = str(uuid.uuid4())
+                
+                # Check rate limit for each video
+                rate_ok, rate_error = check_rate_limit(client_ip)
+                if not rate_ok:
+                    # Skip remaining videos if rate limit exceeded
+                    break
+                
+                # Increment download count for each video
+                with rate_limit_lock:
+                    if client_ip not in download_counts:
+                        download_counts[client_ip] = {'count': 0, 'reset_time': time.time() + 3600}
+                    download_counts[client_ip]['count'] += 1
+                    concurrent_downloads[client_ip] = concurrent_downloads.get(client_ip, 0) + 1
+                
+                with queue_lock:
+                    download_queue.append((job_id, normalized_video_url, quality, client_ip))
+                    download_status[job_id] = {
+                        'status': 'queued',
+                        'progress': 0,
+                        'title': 'Extracting video info...',
+                        'error': None,
+                        'filename': None,
+                        'url': video_url,
+                        'quality': quality,
+                        'format_id': format_id,
+                        'client_ip': client_ip,
+                        'added_at': datetime.now().isoformat(),
+                        'estimated_size': None,
+                        'is_playlist_item': True
+                    }
+                
+                job_ids.append(job_id)
+                
+                # Extract title immediately in background
+                title_thread = threading.Thread(target=extract_video_title, args=(job_id, normalized_video_url), daemon=True)
+                title_thread.start()
+            except Exception as e:
+                logger.error(f"Error adding playlist video {video_url}: {e}")
+                continue
+        
+        return jsonify({
+            'success': True,
+            'job_ids': job_ids,
+            'message': f'{len(job_ids)} videos added to download queue',
+            'queue_position': len(download_queue)
+        })
+    
+    # Single video download
     # Normalize URL for consistent handling
     try:
         normalized_url = normalize_youtube_url(url)
@@ -963,6 +1140,7 @@ def add_to_queue():
             'filename': None,
             'url': url,  # Keep original URL for display
             'quality': quality,
+            'format_id': format_id,
             'client_ip': client_ip,
             'added_at': datetime.now().isoformat(),
             'estimated_size': None  # Will be populated when video info is extracted
