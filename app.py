@@ -940,6 +940,8 @@ if __name__ == '__main__':
     # Use environment variables for production deployment
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     host = os.environ.get('HOST', '0.0.0.0')
-    port = int(os.environ.get('PORT', 5000))
+    # Default to 5001 on macOS to avoid AirPlay Receiver conflict on port 5000
+    # Railway will set PORT automatically, so this only affects local development
+    port = int(os.environ.get('PORT', 5001))
     
     app.run(debug=debug_mode, host=host, port=port)
