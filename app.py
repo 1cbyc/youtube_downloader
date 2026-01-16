@@ -467,46 +467,43 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
         client_ip: IP address of the client requesting the download
         format_id: Specific format ID to download (optional)
     """
-    # Increment concurrent downloads when download actually starts (not when queued)
-    if client_ip:
-        with rate_limit_lock:
-            concurrent_downloads[client_ip] = concurrent_downloads.get(client_ip, 0) + 1
-    
-    try:
-        # Get client-specific downloads folder with error handling
-        if client_ip:
-            downloads_dir = get_client_downloads_folder(client_ip)
-        else:
-            # Fallback to default folder for backward compatibility
-            downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
-            try:
-                os.makedirs(downloads_dir, exist_ok=True)
-            except (OSError, PermissionError) as e:
-                logger.error(f"Cannot create downloads directory {downloads_dir}: {e}")
-                with queue_lock:
-                    if job_id in download_status:
-                        download_status[job_id]['status'] = 'failed'
-                        download_status[job_id]['error'] = f'Cannot create downloads directory: {str(e)}'
-                return False
-        
-        # Check available disk space (for cloud environments)
+    # Use context manager to track concurrent downloads and ensure cleanup on all exit paths
+    with ConcurrentDownloadTracker(client_ip):
         try:
-            stat = os.statvfs(downloads_dir)
-            free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
-            if free_space_gb < 0.5:  # Less than 500MB free
-                logger.warning(f"Low disk space: {free_space_gb:.2f} GB free")
-                # Trigger cleanup
-                cleanup_old_files(downloads_dir)
-        except (OSError, AttributeError):
-            # statvfs not available on Windows, skip check
-            pass
-    except Exception as e:
-        logger.error(f"Error setting up downloads directory: {e}")
-        with queue_lock:
-            if job_id in download_status:
-                download_status[job_id]['status'] = 'failed'
-                download_status[job_id]['error'] = f'Setup error: {str(e)}'
-        return False
+            # Get client-specific downloads folder with error handling
+            if client_ip:
+                downloads_dir = get_client_downloads_folder(client_ip)
+            else:
+                # Fallback to default folder for backward compatibility
+                downloads_dir = os.path.join(BASE_DOWNLOADS_DIR, 'kids')
+                try:
+                    os.makedirs(downloads_dir, exist_ok=True)
+                except (OSError, PermissionError) as e:
+                    logger.error(f"Cannot create downloads directory {downloads_dir}: {e}")
+                    with queue_lock:
+                        if job_id in download_status:
+                            download_status[job_id]['status'] = 'failed'
+                            download_status[job_id]['error'] = f'Cannot create downloads directory: {str(e)}'
+                    return False
+            
+            # Check available disk space (for cloud environments)
+            try:
+                stat = os.statvfs(downloads_dir)
+                free_space_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+                if free_space_gb < 0.5:  # Less than 500MB free
+                    logger.warning(f"Low disk space: {free_space_gb:.2f} GB free")
+                    # Trigger cleanup
+                    cleanup_old_files(downloads_dir)
+            except (OSError, AttributeError):
+                # statvfs not available on Windows, skip check
+                pass
+        except Exception as e:
+            logger.error(f"Error setting up downloads directory: {e}")
+            with queue_lock:
+                if job_id in download_status:
+                    download_status[job_id]['status'] = 'failed'
+                    download_status[job_id]['error'] = f'Setup error: {str(e)}'
+            return False
     
     # Check if paused before starting
     with queue_lock:
@@ -535,18 +532,18 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                 download_status[job_id]['status'] = 'paused'
                 return False
     
-        client_priority = ['ios', 'android', 'tv', 'web']
-        last_error = None
+    client_priority = ['ios', 'android', 'tv', 'web']
+    last_error = None
+    
+    for client in client_priority:
+        # Check if paused before each client attempt
+        with queue_lock:
+            if job_id in paused_jobs:
+                if job_id in download_status:
+                    download_status[job_id]['status'] = 'paused'
+                return False
         
-        for client in client_priority:
-            # Check if paused before each client attempt
-            with queue_lock:
-                if job_id in paused_jobs:
-                    if job_id in download_status:
-                        download_status[job_id]['status'] = 'paused'
-                    return False
-            
-            try:
+        try:
             progress_hook = ProgressHook(job_id)
             
             # Check if partial file exists for resume
@@ -649,6 +646,10 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                             with queue_lock:
                                 download_status[job_id]['status'] = 'failed'
                                 download_status[job_id]['error'] = error_msg
+                            # Decrement concurrent downloads
+                            with rate_limit_lock:
+                                if client_ip in concurrent_downloads:
+                                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                             return False
                     
                     with queue_lock:
@@ -705,33 +706,27 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                 print(f"[DEBUG] Client '{client}' exception: {error_msg[:200]}")
             continue
     
-        # All clients failed
-        # Improve error messages for common issues
-        error_msg = last_error or 'Unknown error'
-        error_lower = error_msg.lower()
-        
-        if 'private video' in error_lower or 'video unavailable' in error_lower:
-            user_error = 'This video is private or unavailable. It may have been removed or made private by the uploader.'
-        elif 'sign in to confirm your age' in error_lower or 'age-restricted' in error_lower:
-            user_error = 'This video is age-restricted and cannot be downloaded. Please try a different video.'
-        elif '403' in error_msg or 'forbidden' in error_lower:
-            user_error = 'Access denied. YouTube may be blocking this video. Please try again later or try a different video.'
-        elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
-            user_error = 'Network error occurred. Please check your internet connection and try again.'
-        else:
-            user_error = f'Download failed: {error_msg[:200]}'
-        
-        with queue_lock:
-            download_status[job_id]['status'] = 'failed'
-            download_status[job_id]['error'] = user_error
-        
-        return False
-    finally:
-        # Always decrement concurrent downloads, regardless of how the function exits
-        if client_ip:
-            with rate_limit_lock:
-                if client_ip in concurrent_downloads:
-                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
+    # All clients failed
+    # Improve error messages for common issues
+    error_msg = last_error or 'Unknown error'
+    error_lower = error_msg.lower()
+    
+    if 'private video' in error_lower or 'video unavailable' in error_lower:
+        user_error = 'This video is private or unavailable. It may have been removed or made private by the uploader.'
+    elif 'sign in to confirm your age' in error_lower or 'age-restricted' in error_lower:
+        user_error = 'This video is age-restricted and cannot be downloaded. Please try a different video.'
+    elif '403' in error_msg or 'forbidden' in error_lower:
+        user_error = 'Access denied. YouTube may be blocking this video. Please try again later or try a different video.'
+    elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
+        user_error = 'Network error occurred. Please check your internet connection and try again.'
+    else:
+        user_error = f'Download failed: {error_msg[:200]}'
+    
+    with queue_lock:
+        download_status[job_id]['status'] = 'failed'
+        download_status[job_id]['error'] = user_error
+    
+    return False
 
 
 def process_queue():
