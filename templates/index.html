@@ -27,6 +27,13 @@
                             placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..." 
                             required
                         >
+                        <button type="button" id="previewBtn" class="btn-preview" style="margin-top: 10px;">
+                            <i class="fas fa-eye"></i> Preview
+                        </button>
+                    </div>
+                    
+                    <div id="videoPreview" style="display: none; margin: 20px 0; padding: 15px; background: #f5f5f5; border-radius: 8px;">
+                        <div id="previewContent"></div>
                     </div>
                     
                     <div class="input-group">
@@ -34,6 +41,14 @@
                         <select id="quality" name="quality">
                             <option value="best">Best Quality</option>
                             <option value="worst">Lower Quality (Smaller File)</option>
+                            <option value="custom">Custom Format</option>
+                        </select>
+                    </div>
+                    
+                    <div id="formatSelection" class="input-group" style="display: none;">
+                        <label for="formatSelect"><i class="fas fa-file-video"></i> Select Format:</label>
+                        <select id="formatSelect" name="format">
+                            <option value="">Loading formats...</option>
                         </select>
                     </div>
 
@@ -76,6 +91,181 @@
     <script>
         let updateInterval;
         const activeJobs = new Set();
+        let currentVideoInfo = null;
+        let savedProgress = JSON.parse(localStorage.getItem('downloadProgress') || '{}');
+
+        // Load saved progress on page load
+        function loadSavedProgress() {
+            if (Object.keys(savedProgress).length > 0) {
+                Object.keys(savedProgress).forEach(jobId => {
+                    activeJobs.add(jobId);
+                });
+                updateQueue();
+            }
+        }
+
+        // Save progress to localStorage
+        function saveProgress() {
+            fetch('/queue')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.jobs) {
+                        const progress = {};
+                        data.jobs.forEach(job => {
+                            if (job.job_id && (job.status === 'queued' || job.status === 'downloading' || job.status === 'paused')) {
+                                progress[job.job_id] = {
+                                    status: job.status,
+                                    progress: job.progress,
+                                    title: job.title
+                                };
+                            }
+                        });
+                        localStorage.setItem('downloadProgress', JSON.stringify(progress));
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // Preview button handler
+        document.getElementById('previewBtn').addEventListener('click', async () => {
+            const url = document.getElementById('videoUrl').value.trim();
+            const previewDiv = document.getElementById('videoPreview');
+            const previewContent = document.getElementById('previewContent');
+            
+            if (!url) {
+                showMessage('Please enter a YouTube URL first', 'error');
+                return;
+            }
+            
+            previewContent.innerHTML = '<p>Loading preview...</p>';
+            previewDiv.style.display = 'block';
+            
+            try {
+                const response = await fetch('/video_info', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentVideoInfo = data;
+                    
+                    if (data.is_playlist) {
+                        previewContent.innerHTML = `
+                            <h3>${escapeHtml(data.title)}</h3>
+                            <p><strong>Playlist:</strong> ${data.video_count} videos</p>
+                            <div style="max-height: 300px; overflow-y: auto; margin-top: 10px;">
+                                ${data.videos.map(v => `
+                                    <div style="padding: 5px; border-bottom: 1px solid #ddd;">
+                                        ${escapeHtml(v.title)}
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <button id="downloadPlaylistBtn" class="btn-download" style="margin-top: 10px;">
+                                Download All Videos
+                            </button>
+                        `;
+                        
+                        document.getElementById('downloadPlaylistBtn').addEventListener('click', () => {
+                            downloadPlaylist(data.videos.map(v => v.url));
+                        });
+                    } else {
+                        const duration = data.duration ? formatDuration(data.duration) : 'Unknown';
+                        const fileSize = data.filesize ? (data.filesize / (1024 * 1024)).toFixed(2) + ' MB' : 'Unknown';
+                        
+                        previewContent.innerHTML = `
+                            ${data.thumbnail ? `<img src="${data.thumbnail}" style="max-width: 100%; border-radius: 8px; margin-bottom: 10px;" alt="Video thumbnail">` : ''}
+                            <h3>${escapeHtml(data.title)}</h3>
+                            <p><strong>Channel:</strong> ${escapeHtml(data.uploader)}</p>
+                            <p><strong>Duration:</strong> ${duration}</p>
+                            <p><strong>Estimated Size:</strong> ${fileSize}</p>
+                        `;
+                        
+                        // Populate format selection
+                        if (data.formats && data.formats.length > 0) {
+                            const formatSelect = document.getElementById('formatSelect');
+                            formatSelect.innerHTML = '<option value="">Use quality setting</option>';
+                            data.formats.forEach(format => {
+                                const size = format.filesize ? (format.filesize / (1024 * 1024)).toFixed(2) + ' MB' : 'Unknown size';
+                                const label = `${format.ext.toUpperCase()} - ${format.resolution || 'Unknown'} - ${size}`;
+                                formatSelect.innerHTML += `<option value="${format.format_id}">${label}</option>`;
+                            });
+                        }
+                    }
+                } else {
+                    previewContent.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                }
+            } catch (error) {
+                previewContent.innerHTML = `<p style="color: red;">Error loading preview: ${error.message}</p>`;
+            }
+        });
+
+        function formatDuration(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            if (hours > 0) {
+                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+            return `${minutes}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function downloadPlaylist(videoUrls) {
+            const quality = document.getElementById('quality').value;
+            const formatId = document.getElementById('formatSelect').value;
+            
+            fetch('/download', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    url: videoUrls[0],
+                    quality: quality,
+                    format_id: formatId || null,
+                    is_playlist: true,
+                    playlist_videos: videoUrls
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    if (data.job_ids) {
+                        data.job_ids.forEach(id => activeJobs.add(id));
+                        showMessage(`${data.job_ids.length} videos added to queue`, 'success');
+                    } else {
+                        activeJobs.add(data.job_id);
+                        showMessage('Video added to queue', 'success');
+                    }
+                    document.getElementById('videoUrl').value = '';
+                    document.getElementById('videoPreview').style.display = 'none';
+                    updateQueue();
+                    saveProgress();
+                } else {
+                    showMessage('Error: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Error: ' + error.message, 'error');
+            });
+        }
+
+        // Quality selector change handler
+        document.getElementById('quality').addEventListener('change', (e) => {
+            const formatSelection = document.getElementById('formatSelection');
+            if (e.target.value === 'custom') {
+                formatSelection.style.display = 'block';
+                if (currentVideoInfo && !currentVideoInfo.is_playlist) {
+                    document.getElementById('previewBtn').click();
+                }
+            } else {
+                formatSelection.style.display = 'none';
+            }
+        });
 
         // Download form handler
         document.getElementById('downloadForm').addEventListener('submit', async (e) => {
@@ -83,10 +273,16 @@
             
             const url = document.getElementById('videoUrl').value.trim();
             const quality = document.getElementById('quality').value;
+            const formatId = quality === 'custom' ? document.getElementById('formatSelect').value : null;
             const messageDiv = document.getElementById('message');
             
             if (!url) {
                 showMessage('Please enter a YouTube URL', 'error');
+                return;
+            }
+            
+            if (quality === 'custom' && !formatId) {
+                showMessage('Please select a format', 'error');
                 return;
             }
             
@@ -98,16 +294,28 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ url, quality })
+                    body: JSON.stringify({ 
+                        url, 
+                        quality: quality === 'custom' ? 'best' : quality,
+                        format_id: formatId
+                    })
                 });
                 
                 const data = await response.json();
                 
                 if (data.success) {
-                    showMessage(`Video added to queue (Position: ${data.queue_position})`, 'success');
+                    if (data.job_ids) {
+                        data.job_ids.forEach(id => activeJobs.add(id));
+                        showMessage(`${data.job_ids.length} videos added to queue`, 'success');
+                    } else {
+                        activeJobs.add(data.job_id);
+                        showMessage(`Video added to queue (Position: ${data.queue_position})`, 'success');
+                    }
                     document.getElementById('videoUrl').value = '';
-                    activeJobs.add(data.job_id);
+                    document.getElementById('videoPreview').style.display = 'none';
+                    currentVideoInfo = null;
                     updateQueue();
+                    saveProgress();
                 } else {
                     showMessage('Error: ' + data.error, 'error');
                 }
@@ -558,8 +766,14 @@
         }, 2000); // Refresh downloads list every 2 seconds
         
         // Load initial data
+        loadSavedProgress(); // Load saved progress first
         updateQueue();
         loadDownloads(true); // Show loading on initial load
+        
+        // Save progress periodically
+        setInterval(() => {
+            saveProgress();
+        }, 5000); // Save every 5 seconds
         
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
