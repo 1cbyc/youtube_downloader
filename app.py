@@ -18,8 +18,8 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())  # For CSRF protection
 
-# Enable CORS for React dev server
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://localhost:3000"]}})
+# Enable CORS for React dev server - allow all routes since we don't use /api prefix
+CORS(app, resources={r"/*": {"origins": ["http://localhost:5173", "http://localhost:3000"]}})
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -904,10 +904,14 @@ def serve_react(path):
     if any(path.startswith(route) for route in api_routes):
         return jsonify({'error': 'Not found'}), 404
     
-    # Try to serve static file from React dist
-    react_file = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', path)
-    if os.path.exists(react_file) and os.path.isfile(react_file):
-        return send_file(react_file)
+    # Try to serve static file from React dist (use send_from_directory to prevent path traversal)
+    react_dist_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
+    if os.path.exists(react_dist_dir):
+        try:
+            return send_from_directory(react_dist_dir, path)
+        except (FileNotFoundError, ValueError):
+            # File not found or path traversal attempt - fall through to index.html
+            pass
     
     # For React Router - serve index.html for all other routes
     react_dist = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', 'index.html')
@@ -1335,7 +1339,6 @@ def add_to_queue():
                         'url': video_url,
                         'quality': quality,
                         'format_id': format_id,
-            'throttle_speed': throttle_speed,
                         'throttle_speed': throttle_speed,
                         'client_ip': client_ip,
                         'added_at': datetime.now().isoformat(),
