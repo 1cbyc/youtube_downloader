@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify, send_file
+from flask_cors import CORS
 import os
 import yt_dlp
 from werkzeug.utils import secure_filename
@@ -16,6 +17,9 @@ import mimetypes
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24).hex())  # For CSRF protection
+
+# Enable CORS for React dev server
+CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://localhost:3000"]}})
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -882,8 +886,35 @@ queue_thread.start()
 
 @app.route('/')
 def index():
-    """Main page"""
+    """Main page - serve React app in production, fallback to old template"""
+    # In production, serve React app from frontend/dist
+    react_dist = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', 'index.html')
+    if os.path.exists(react_dist):
+        return send_file(react_dist)
+    # Fallback to old template for development/backwards compatibility
     return render_template('index.html')
+
+
+@app.route('/<path:path>')
+def serve_react(path):
+    """Serve React app static files and handle client-side routing"""
+    # Don't interfere with API routes
+    api_routes = ['api/', 'download_file/', 'video_info', 'download', 'queue', 'pause', 
+                  'resume', 'history', 'health', 'cleanup', 'list_downloads', 'open_']
+    if any(path.startswith(route) for route in api_routes):
+        return jsonify({'error': 'Not found'}), 404
+    
+    # Try to serve static file from React dist
+    react_file = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', path)
+    if os.path.exists(react_file) and os.path.isfile(react_file):
+        return send_file(react_file)
+    
+    # For React Router - serve index.html for all other routes
+    react_dist = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', 'index.html')
+    if os.path.exists(react_dist):
+        return send_file(react_dist)
+    
+    return jsonify({'error': 'Not found'}), 404
 
 
 @app.route('/video_info', methods=['POST'])
