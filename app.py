@@ -14,9 +14,18 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Get the user's Downloads folder (works on Windows, macOS, and Linux)
+# For cloud deployment, use a downloads directory in the app folder
 def get_downloads_folder():
     """Get the base Downloads folder path"""
     import platform
+    
+    # Check if we're in a cloud environment (Railway, Heroku, etc.)
+    # Use environment variable or default to app directory
+    cloud_downloads = os.environ.get('DOWNLOADS_DIR')
+    if cloud_downloads:
+        return cloud_downloads
+    
+    # For local development, use user's Downloads folder
     home = os.path.expanduser('~')
     
     if platform.system() == 'Windows':
@@ -34,6 +43,8 @@ def get_downloads_folder():
 def get_client_downloads_folder(client_ip):
     """Get downloads folder for a specific client IP address"""
     base_downloads = get_downloads_folder()
+    # Ensure base directory exists (important for cloud deployments)
+    os.makedirs(base_downloads, exist_ok=True)
     # Create folder structure: Downloads/kids/{client_ip}/
     # Replace dots and colons in IP for folder name safety
     safe_ip = client_ip.replace('.', '_').replace(':', '_')
@@ -42,7 +53,9 @@ def get_client_downloads_folder(client_ip):
     return client_folder
 
 # Base downloads directory (for backward compatibility)
+# Ensure it exists (important for cloud deployments)
 BASE_DOWNLOADS_DIR = get_downloads_folder()
+os.makedirs(BASE_DOWNLOADS_DIR, exist_ok=True)
 
 # Download queue and status tracking
 download_queue = []
@@ -924,4 +937,9 @@ def open_file_in_folder(filename):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Use environment variables for production deployment
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', 5000))
+    
+    app.run(debug=debug_mode, host=host, port=port)
