@@ -535,18 +535,18 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                 download_status[job_id]['status'] = 'paused'
                 return False
     
-    client_priority = ['ios', 'android', 'tv', 'web']
-    last_error = None
-    
-    for client in client_priority:
-        # Check if paused before each client attempt
-        with queue_lock:
-            if job_id in paused_jobs:
-                if job_id in download_status:
-                    download_status[job_id]['status'] = 'paused'
-                return False
+        client_priority = ['ios', 'android', 'tv', 'web']
+        last_error = None
         
-        try:
+        for client in client_priority:
+            # Check if paused before each client attempt
+            with queue_lock:
+                if job_id in paused_jobs:
+                    if job_id in download_status:
+                        download_status[job_id]['status'] = 'paused'
+                    return False
+            
+            try:
             progress_hook = ProgressHook(job_id)
             
             # Check if partial file exists for resume
@@ -594,10 +594,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                             download_status[job_id]['status'] = 'failed'
                             download_status[job_id]['error'] = error_msg
                             download_status[job_id]['title'] = video_title
-                    # Decrement concurrent downloads
-                    with rate_limit_lock:
-                        if client_ip in concurrent_downloads:
-                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                     return False
                 
                 # Get source URL (direct video URL if available)
@@ -653,10 +649,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                             with queue_lock:
                                 download_status[job_id]['status'] = 'failed'
                                 download_status[job_id]['error'] = error_msg
-                            # Decrement concurrent downloads
-                            with rate_limit_lock:
-                                if client_ip in concurrent_downloads:
-                                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                             return False
                     
                     with queue_lock:
@@ -665,11 +657,6 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                         download_status[job_id]['filename'] = filename
                         download_status[job_id]['title'] = video_title
                         download_status[job_id]['completed_at'] = datetime.now().isoformat()
-                    
-                    # Decrement concurrent downloads on success
-                    with rate_limit_lock:
-                        if client_ip in concurrent_downloads:
-                            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
                     
                     # Trigger a refresh of downloads list (will be picked up by frontend polling)
                     return True
@@ -718,32 +705,33 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None):
                 print(f"[DEBUG] Client '{client}' exception: {error_msg[:200]}")
             continue
     
-    # All clients failed
-    # Improve error messages for common issues
-    error_msg = last_error or 'Unknown error'
-    error_lower = error_msg.lower()
-    
-    if 'private video' in error_lower or 'video unavailable' in error_lower:
-        user_error = 'This video is private or unavailable. It may have been removed or made private by the uploader.'
-    elif 'sign in to confirm your age' in error_lower or 'age-restricted' in error_lower:
-        user_error = 'This video is age-restricted and cannot be downloaded. Please try a different video.'
-    elif '403' in error_msg or 'forbidden' in error_lower:
-        user_error = 'Access denied. YouTube may be blocking this video. Please try again later or try a different video.'
-    elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
-        user_error = 'Network error occurred. Please check your internet connection and try again.'
-    else:
-        user_error = f'Download failed: {error_msg[:200]}'
-    
-    with queue_lock:
-        download_status[job_id]['status'] = 'failed'
-        download_status[job_id]['error'] = user_error
-    
-    # Decrement concurrent downloads
-    with rate_limit_lock:
-        if client_ip and client_ip in concurrent_downloads:
-            concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
-    
-    return False
+        # All clients failed
+        # Improve error messages for common issues
+        error_msg = last_error or 'Unknown error'
+        error_lower = error_msg.lower()
+        
+        if 'private video' in error_lower or 'video unavailable' in error_lower:
+            user_error = 'This video is private or unavailable. It may have been removed or made private by the uploader.'
+        elif 'sign in to confirm your age' in error_lower or 'age-restricted' in error_lower:
+            user_error = 'This video is age-restricted and cannot be downloaded. Please try a different video.'
+        elif '403' in error_msg or 'forbidden' in error_lower:
+            user_error = 'Access denied. YouTube may be blocking this video. Please try again later or try a different video.'
+        elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
+            user_error = 'Network error occurred. Please check your internet connection and try again.'
+        else:
+            user_error = f'Download failed: {error_msg[:200]}'
+        
+        with queue_lock:
+            download_status[job_id]['status'] = 'failed'
+            download_status[job_id]['error'] = user_error
+        
+        return False
+    finally:
+        # Always decrement concurrent downloads, regardless of how the function exits
+        if client_ip:
+            with rate_limit_lock:
+                if client_ip in concurrent_downloads:
+                    concurrent_downloads[client_ip] = max(0, concurrent_downloads[client_ip] - 1)
 
 
 def process_queue():
