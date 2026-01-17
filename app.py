@@ -567,10 +567,11 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
                 return False
     
     # Try web client first (most stable), then mobile clients
+    # Rotate client order to avoid patterns that trigger bot detection
     client_priority = ['web', 'ios', 'android', 'tv']
     last_error = None
     
-    for client in client_priority:
+    for idx, client in enumerate(client_priority):
         # Check if paused before each client attempt
         with queue_lock:
             if job_id in paused_jobs:
@@ -743,7 +744,8 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
                 'private video' in error_lower or
                 'video unavailable' in error_lower or
                 'sign in to confirm your age' in error_lower or
-                'this video is not available' in error_lower
+                'this video is not available' in error_lower or
+                'sign in to confirm' in error_lower and 'bot' in error_lower
             )
             
             # Check for retryable errors (player response, extraction failures)
@@ -764,12 +766,16 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
             elif is_retryable:
                 # Retryable error - try next client with a small delay
                 logger.info(f"[DEBUG] Client '{client}' failed (retrying with next client): {error_msg[:200]}")
-                time.sleep(1)  # Small delay between client attempts
+                # Increase delay for bot detection errors
+                if 'bot' in error_lower or 'sign in' in error_lower:
+                    time.sleep(2 + idx)  # Longer delay for bot detection (2s, 3s, 4s, 5s)
+                else:
+                    time.sleep(1)  # Small delay between client attempts
                 continue
             else:
                 # Other errors - still try next client as fallback
                 logger.info(f"[DEBUG] Client '{client}' error (non-blocking): {error_msg[:200]}")
-                time.sleep(0.5)  # Small delay
+                time.sleep(0.5 + (idx * 0.3))  # Small delay, slightly increasing
                 continue
                 
         except Exception as e:
@@ -797,6 +803,8 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
         user_error = 'This video is private or unavailable. It may have been removed or made private by the uploader.'
     elif 'sign in to confirm your age' in error_lower or 'age-restricted' in error_lower:
         user_error = 'This video is age-restricted and cannot be downloaded. Please try a different video.'
+    elif ('sign in to confirm' in error_lower and 'bot' in error_lower) or 'cookies' in error_lower and 'bot' in error_lower:
+        user_error = 'YouTube is requiring verification for this video. Please try again in a few minutes. If the issue persists, YouTube may be temporarily blocking automated access.'
     elif 'player response' in error_lower or ('failed to extract' in error_lower and 'player' in error_lower):
         user_error = 'YouTube temporarily blocked access to this video. Please try again in a few minutes, or try a different video. This usually resolves itself quickly.'
     elif '403' in error_msg or 'forbidden' in error_lower:
@@ -804,7 +812,11 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
     elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
         user_error = 'Network error occurred. Please check your internet connection and try again.'
     else:
-        user_error = f'Download failed: {error_msg[:200]}'
+        # Truncate long error messages but keep important parts
+        if len(error_msg) > 200:
+            user_error = f'Download failed: {error_msg[:150]}...'
+        else:
+            user_error = f'Download failed: {error_msg}'
     
     with queue_lock:
         download_status[job_id]['status'] = 'failed'
