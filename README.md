@@ -13,16 +13,16 @@ I needed a simple web app to download YouTube videos that would be perfect for m
 ## Screenshots
 
 ### Dark Mode
-![Dark Mode UI](screenshots/Screenshot%202026-01-17%20at%208.41.41%20AM.png)
+![Dark Mode UI](screenshots/Screenshot-2026-01-17-at-8.41.41-AM.png)
 
 ### Light Mode  
-![Light Mode UI](screenshots/Screenshot%202026-01-17%20at%208.41.57%20AM.png)
+![Light Mode UI](screenshots/Screenshot-2026-01-17-at-8.41.57-AM.png)
 
 ### Download in Progress
-![Download Progress](screenshots/Screenshot%202026-01-17%20at%209.32.44%20AM.png)
+![Download Progress](screenshots/Screenshot-2026-01-17-at-9.32.44-AM.png)
 
 ### Downloaded Videos History
-![Downloaded Videos](screenshots/Screenshot%202026-01-17%20at%209.32.51%20AM.png)
+![Downloaded Videos](screenshots/Screenshot-2026-01-17-at-9.32.51-AM.png)
 
 ## Installation
 
