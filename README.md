@@ -33,22 +33,104 @@ I needed a simple web app to download YouTube videos that would be perfect for m
 </tr>
 </table>
 
-### Download Features
+### Download Queue & Progress
 
 <table>
 <tr>
 <td width="50%">
 
-**Download in Progress**
+**Download Queue with Progress**
 
 <img src="screenshots/Screenshot-2026-01-17-at-9.32.44-AM.png" alt="Download Progress" width="100%"/>
 
 </td>
 <td width="50%">
 
-**Download History**
+**Download Details**
+
+<img src="screenshots/Screenshot-2026-01-17-at-11.05.25-AM.png" alt="Download Details" width="100%"/>
+
+</td>
+</tr>
+</table>
+
+### File Management
+
+<table>
+<tr>
+<td width="50%">
+
+**Downloaded Files & History**
 
 <img src="screenshots/Screenshot-2026-01-17-at-9.32.51-AM.png" alt="Downloaded Videos" width="100%"/>
+
+</td>
+<td width="50%">
+
+**Downloaded Files List**
+
+<img src="screenshots/Screenshot-2026-01-17-at-10.47.37-AM.png" alt="Downloaded Files" width="100%"/>
+
+</td>
+</tr>
+</table>
+
+### Format Selection & Custom Options
+
+<table>
+<tr>
+<td width="50%">
+
+**Format Selection List**
+
+<img src="screenshots/Screenshot-2026-01-17-at-11.05.50-AM.png" alt="Format Selection" width="100%"/>
+
+</td>
+<td width="50%">
+
+**Custom Format Options**
+
+<img src="screenshots/Screenshot-2026-01-17-at-10.47.49-AM.png" alt="Custom Format" width="100%"/>
+
+</td>
+</tr>
+</table>
+
+### Additional Features
+
+<table>
+<tr>
+<td width="50%">
+
+**Video Preview**
+
+<img src="screenshots/Screenshot-2026-01-17-at-10.47.58-AM.png" alt="Video Preview" width="100%"/>
+
+</td>
+<td width="50%">
+
+**Download Settings**
+
+<img src="screenshots/Screenshot-2026-01-17-at-10.48.04-AM.png" alt="Download Settings" width="100%"/>
+
+</td>
+</tr>
+</table>
+
+<table>
+<tr>
+<td width="50%">
+
+**Mobile View**
+
+<img src="screenshots/Screenshot-2026-01-17-at-10.57.34-AM.png" alt="Mobile View" width="100%"/>
+
+</td>
+<td width="50%">
+
+**Error Handling**
+
+<img src="screenshots/Screenshot-2026-01-17-at-11.01.00-AM.png" alt="Error Handling" width="100%"/>
 
 </td>
 </tr>
