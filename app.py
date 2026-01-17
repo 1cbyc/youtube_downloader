@@ -1697,29 +1697,78 @@ def get_queue():
         return jsonify({'jobs': jobs})
 
 
-@app.route('/download_file/<filename>')
+@app.route('/download_file/<path:filename>')
 def download_file(filename):
-    """Serve downloaded file from client's folder with security validation"""
+    """Serve downloaded file from client's folder with security validation
+    
+    Handles URL-encoded filenames and finds matching files on disk.
+    The filename parameter may contain spaces, commas, and other special characters
+    that were URL-encoded in the request.
+    """
+    from urllib.parse import unquote
+    
     client_ip = get_client_ip()
     downloads_dir = get_client_downloads_folder(client_ip)
     
-    # Sanitize filename to prevent directory traversal
-    safe_filename = secure_filename(filename)
-    if not safe_filename or safe_filename != filename:
-        log_security_event('INVALID_FILENAME', f'Filename: {filename}', client_ip)
+    # URL-decode the filename (Flask does this automatically, but be explicit)
+    decoded_filename = unquote(filename)
+    
+    # Sanitize for security check (but don't use it for file lookup)
+    safe_filename = secure_filename(decoded_filename)
+    
+    # Security: Ensure no directory traversal attempts
+    if '..' in decoded_filename or '/' in decoded_filename or '\\' in decoded_filename:
+        log_security_event('DIRECTORY_TRAVERSAL_ATTEMPT', f'Filename: {decoded_filename}', client_ip)
         return jsonify({'error': 'Invalid filename'}), 400
     
-    file_path = os.path.join(downloads_dir, safe_filename)
+    # Try to find the file - first try exact match, then try sanitized version
+    file_path = None
+    actual_filename = None
     
-    # Prevent directory traversal
+    if not os.path.exists(downloads_dir):
+        return jsonify({'error': 'Downloads directory not found'}), 404
+    
+    # List all files and find a match
+    try:
+        files = os.listdir(downloads_dir)
+        
+        # First, try exact match (decoded filename)
+        if decoded_filename in files:
+            file_path = os.path.join(downloads_dir, decoded_filename)
+            actual_filename = decoded_filename
+        # Then try sanitized version
+        elif safe_filename and safe_filename in files:
+            file_path = os.path.join(downloads_dir, safe_filename)
+            actual_filename = safe_filename
+        # Finally, try case-insensitive and partial matching
+        else:
+            # Normalize for comparison (lowercase, remove extra spaces)
+            normalized_search = decoded_filename.lower().strip()
+            for file in files:
+                # Skip .part files
+                if file.endswith('.part'):
+                    continue
+                normalized_file = file.lower().strip()
+                # Check if the file starts with or contains the search term
+                if normalized_file == normalized_search or normalized_file.startswith(normalized_search[:50]):
+                    file_path = os.path.join(downloads_dir, file)
+                    actual_filename = file
+                    break
+    
+    except OSError as e:
+        logger.error(f"Error listing files in {downloads_dir}: {e}")
+        return jsonify({'error': 'Error accessing downloads directory'}), 500
+    
+    if not file_path or not os.path.exists(file_path):
+        logger.warning(f"File not found: {decoded_filename} in {downloads_dir}")
+        return jsonify({'error': 'File not found'}), 404
+    
+    # Final security check: ensure file is within downloads directory
     file_path = os.path.abspath(file_path)
     downloads_dir_abs = os.path.abspath(downloads_dir)
     if not file_path.startswith(downloads_dir_abs):
         log_security_event('DIRECTORY_TRAVERSAL', f'Path: {file_path}, Expected: {downloads_dir_abs}', client_ip)
         return jsonify({'error': 'Invalid file path'}), 403
-    
-    if not os.path.exists(file_path):
-        return jsonify({'error': 'File not found'}), 404
     
     # Validate file type
     if not validate_file_type(file_path):
@@ -1746,7 +1795,9 @@ def download_file(filename):
         response = send_file(file_path, as_attachment=True)
         # Add security headers
         response.headers['X-Content-Type-Options'] = 'nosniff'
-        response.headers['Content-Disposition'] = f'attachment; filename="{safe_filename}"'
+        # Use the actual filename for Content-Disposition, but sanitize it for safety
+        safe_download_name = secure_filename(actual_filename) if actual_filename else safe_filename
+        response.headers['Content-Disposition'] = f'attachment; filename="{safe_download_name}"'
         return response
     except Exception as e:
         logger.error(f"Error serving file {file_path}: {e}")
