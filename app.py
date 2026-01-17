@@ -889,8 +889,17 @@ def index():
     """Main page - serve React app in production, fallback to old template"""
     # In production, serve React app from frontend/dist
     react_dist = os.path.join(os.path.dirname(__file__), 'frontend', 'dist', 'index.html')
+    react_dist_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
+    
+    # Check if React build exists
     if os.path.exists(react_dist):
         return send_file(react_dist)
+    
+    # Log warning if React build is missing (helps debug Railway deployments)
+    logger.warning(f"React build not found at {react_dist}. "
+                   f"React dist directory exists: {os.path.exists(react_dist_dir)}. "
+                   f"Falling back to old template.")
+    
     # Fallback to old template for development/backwards compatibility
     return render_template('index.html')
 
