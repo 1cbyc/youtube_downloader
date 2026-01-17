@@ -1,13 +1,16 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "npm-10_x", "python312", "python312Packages.pip", "python312Packages.setuptools"]
+nixPkgs = ["nodejs_20", "python312", "python312Packages.pip"]
 
 [phases.install]
 cmds = [
-  "npm i",
-  "python3 -m pip install --user -r requirements.txt"
+  "pip install -r requirements.txt",
+  "cd frontend && npm ci"
 ]
 
 [phases.build]
 cmds = [
-  "npm run build"
+  "cd frontend && npm run build"
 ]
+
+[start]
+cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 2 --timeout 300"

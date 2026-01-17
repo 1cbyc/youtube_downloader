@@ -9,8 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -273,3 +273,4 @@ $RECYCLE.BIN/
 *.msix
 *.msm
 *.msp
+.DS_Store
