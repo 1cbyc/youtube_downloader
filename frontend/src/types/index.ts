@@ -54,3 +54,9 @@ export interface HistoryAnalytics {
   total_size_gb: number;
   total_size_mb: number;
 }
+
+export interface DownloadedFile {
+  name: string;
+  size: number;
+  modified: number;
+}
