@@ -1,8 +1,14 @@
 [phases.setup]
-nixPkgs = ["nodejs_20", "npm-10_x"]
+nixPkgs = ["nodejs_20", "npm-10_x", "python312"]
 
 [phases.install]
-cmds = ["npm i"]
+cmds = [
+  "npm i",
+  "cd frontend && npm install"
+]
 
 [phases.build]
-cmds = ["npm run build && pip install -r requirements.txt"]
+cmds = [
+  "npm run build",
+  "pip install -r requirements.txt"
+]
