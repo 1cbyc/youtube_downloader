@@ -18,6 +18,12 @@ I needed a simple web app to download YouTube videos that would be perfect for m
 ### Light Mode  
 ![Light Mode UI](screenshots/Screenshot%202026-01-17%20at%208.41.57%20AM.png)
 
+### Download in Progress
+![Download Progress](screenshots/Screenshot%202026-01-17%20at%209.32.44%20AM.png)
+
+### Downloaded Videos History
+![Downloaded Videos](screenshots/Screenshot%202026-01-17%20at%209.32.51%20AM.png)
+
 ## Installation
 
 1. Create a virtual environment:
