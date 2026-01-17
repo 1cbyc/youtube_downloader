@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { VideoInfo, DownloadJob, DownloadHistory, HistoryAnalytics } from '../types'
+import type { VideoInfo, DownloadJob, DownloadHistory, HistoryAnalytics, DownloadedFile } from '../types'
 
 const api = axios.create({
   baseURL: import.meta.env.DEV ? '' : '', // Use proxy in dev, empty in production (same origin)
@@ -74,8 +74,8 @@ export const videoApi = {
     return data
   },
 
-  getDownloads: async (): Promise<{ files: string[] }> => {
-    const { data } = await api.get<{ files: string[] }>('/list_downloads')
+  getDownloads: async (): Promise<{ files: DownloadedFile[] }> => {
+    const { data } = await api.get<{ files: DownloadedFile[] }>('/list_downloads')
     return { files: data.files || [] }
   },
 
