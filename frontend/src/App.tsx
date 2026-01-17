@@ -8,7 +8,7 @@ import { Card, CardHeader, CardTitle, CardContent } from './components/ui/card'
 import { Progress } from './components/ui/progress'
 import { videoApi } from '@/lib/api'
 import type { VideoInfo, DownloadJob, DownloadHistory, HistoryAnalytics, DownloadedFile } from './types'
-import { Moon, Sun, Play, Pause, Download, Eye, History, RefreshCw, FolderOpen, Gauge, X } from 'lucide-react'
+import { Moon, Sun, Play, Pause, Download, Eye, History, RefreshCw, FolderOpen, Gauge, X, Github } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const queryClient = new QueryClient({
@@ -215,21 +215,25 @@ function App() {
       <div className="min-h-screen bg-background text-foreground font-sans">
         {/* Header */}
         <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-50">
-          <div className="container mx-auto px-3 sm:px-4 py-3 sm:py-4 flex items-center justify-between">
-            <div className="min-w-0 flex-1">
-              <h1 className="text-xl sm:text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent truncate">
-                1cbyc - YouTube Downloader
-              </h1>
-              <p className="text-xs sm:text-sm text-muted-foreground mt-0.5 hidden sm:block">Download your favorite videos</p>
+          <div className="container mx-auto px-3 sm:px-4 py-3 sm:py-4">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0 flex-1">
+                <h1 className="text-xl sm:text-2xl md:text-3xl font-bold text-foreground truncate">
+                  1cbyc - YouTube Downloader
+                </h1>
+              </div>
+              <div className="flex items-center gap-2 sm:gap-3">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={toggleTheme}
+                  className="rounded-full flex-shrink-0"
+                  title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                >
+                  {theme === 'dark' ? <Sun className="h-4 w-4 sm:h-5 sm:w-5" /> : <Moon className="h-4 w-4 sm:h-5 sm:w-5" />}
+                </Button>
+              </div>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggleTheme}
-              className="rounded-full flex-shrink-0 ml-2"
-            >
-              {theme === 'dark' ? <Sun className="h-4 w-4 sm:h-5 sm:w-5" /> : <Moon className="h-4 w-4 sm:h-5 sm:w-5" />}
-            </Button>
           </div>
         </header>
 
@@ -553,6 +557,42 @@ function App() {
             </Card>
           </div>
         </main>
+
+        {/* Footer */}
+        <footer className="border-t border-border bg-card/50 mt-12 sm:mt-16 md:mt-20">
+          <div className="container mx-auto px-3 sm:px-4 py-8 sm:py-10 md:py-12">
+            <div className="flex flex-col items-center gap-6 sm:gap-8">
+              {/* Social Links */}
+              <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4">
+                <a
+                  href="https://github.com/1cbyc/youtube_downloader"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-5 sm:px-6 py-2.5 sm:py-3 bg-background border border-border rounded-lg hover:bg-muted transition-colors text-sm sm:text-base font-medium"
+                >
+                  <Github className="h-4 w-4 sm:h-5 sm:w-5" />
+                  Star on GitHub
+                </a>
+                <a
+                  href="https://nsisong.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-5 sm:px-6 py-2.5 sm:py-3 bg-background border border-border rounded-lg hover:bg-muted transition-colors text-sm sm:text-base font-medium"
+                >
+                  <svg className="h-4 w-4 sm:h-5 sm:w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                  </svg>
+                  Visit my website
+                </a>
+              </div>
+
+              {/* Copyright */}
+              <p className="text-center text-xs sm:text-sm text-muted-foreground">
+                © 2026 1cbyc - YouTube Downloader. All rights reserved.
+              </p>
+            </div>
+          </div>
+        </footer>
       </div>
     </QueryClientProvider>
   )
