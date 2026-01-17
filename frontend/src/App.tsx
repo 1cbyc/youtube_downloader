@@ -8,7 +8,7 @@ import { Card, CardHeader, CardTitle, CardContent } from './components/ui/card'
 import { Progress } from './components/ui/progress'
 import { videoApi } from '@/lib/api'
 import type { VideoInfo, DownloadJob, DownloadHistory, HistoryAnalytics, DownloadedFile } from './types'
-import { Moon, Sun, Play, Pause, Download, Eye, History, RefreshCw, FolderOpen, Gauge, X, Github } from 'lucide-react'
+import { Moon, Sun, Play, Pause, Download, Eye, History, RefreshCw, FolderOpen, Gauge, X, Github, ArrowDownToLine, FileVideo } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const queryClient = new QueryClient({
@@ -35,6 +35,7 @@ function App() {
   const [showHistory, setShowHistory] = useState(false)
   const [history, setHistory] = useState<DownloadHistory[]>([])
   const [analytics, setAnalytics] = useState<HistoryAnalytics | null>(null)
+  const [downloadingFile, setDownloadingFile] = useState<string | null>(null)
 
   // Load saved progress from localStorage
   useEffect(() => {
@@ -428,9 +429,11 @@ function App() {
                             {job.status === 'completed' && job.filename && (
                               <a
                                 href={videoApi.downloadFile(job.filename)}
-                                className="text-xs sm:text-sm text-primary hover:underline mt-2 inline-block break-all"
+                                download={job.filename}
+                                className="inline-flex items-center gap-2 mt-3 px-3 py-1.5 rounded-md bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground border border-primary/20 hover:border-primary transition-all duration-200 text-xs sm:text-sm font-medium"
                               >
-                                Download: {job.filename}
+                                <ArrowDownToLine className="h-3 w-3 sm:h-4 sm:w-4" />
+                                <span>Download File</span>
                               </a>
                             )}
                           </div>
@@ -483,20 +486,56 @@ function App() {
                   <p className="text-muted-foreground text-center py-6 sm:py-8 text-sm sm:text-base">No downloads yet</p>
                 ) : (
                   <div className="space-y-2">
-                    {downloads.map((file) => (
-                      <a
-                        key={file.name}
-                        href={videoApi.downloadFile(file.name)}
-                        className="block p-2.5 sm:p-3 rounded-lg hover:bg-muted/80 transition-colors border border-border/50 active:bg-muted"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs sm:text-sm font-medium truncate flex-1 min-w-0">{file.name}</span>
-                          <span className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">
-                            {(file.size / (1024 * 1024)).toFixed(1)} MB
-                          </span>
+                    {downloads.map((file) => {
+                      const isDownloading = downloadingFile === file.name
+                      return (
+                        <div
+                          key={file.name}
+                          className="group flex items-center gap-3 p-3 sm:p-4 rounded-lg border border-border/50 hover:border-primary/50 hover:bg-muted/50 transition-all duration-200"
+                        >
+                          <div className="flex-shrink-0">
+                            <FileVideo className="h-5 w-5 sm:h-6 sm:w-6 text-muted-foreground group-hover:text-primary transition-colors" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm sm:text-base font-medium truncate text-foreground">
+                              {file.name}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {(file.size / (1024 * 1024)).toFixed(1)} MB
+                            </p>
+                          </div>
+                          <a
+                            href={videoApi.downloadFile(file.name)}
+                            download={file.name}
+                            onClick={() => {
+                              setDownloadingFile(file.name)
+                              // Reset after a delay to show feedback
+                              setTimeout(() => setDownloadingFile(null), 2000)
+                            }}
+                            className={cn(
+                              "flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 rounded-lg font-medium text-sm sm:text-base transition-all duration-200 flex-shrink-0",
+                              isDownloading
+                                ? "bg-primary text-primary-foreground animate-pulse"
+                                : "bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground border border-primary/20 hover:border-primary"
+                            )}
+                          >
+                            {isDownloading ? (
+                              <>
+                                <RefreshCw className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" />
+                                <span className="hidden sm:inline">Downloading...</span>
+                                <span className="sm:hidden">...</span>
+                              </>
+                            ) : (
+                              <>
+                                <ArrowDownToLine className="h-4 w-4 sm:h-5 sm:w-5" />
+                                <span className="hidden sm:inline">Download</span>
+                                <span className="sm:hidden">DL</span>
+                              </>
+                            )}
+                          </a>
                         </div>
-                      </a>
-                    ))}
+                      )
+                    })}
                   </div>
                 )}
               </CardContent>
