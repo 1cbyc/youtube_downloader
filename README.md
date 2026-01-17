@@ -2,12 +2,21 @@
 
 I needed a simple web app to download YouTube videos that would be perfect for my wife to downloading our kids' videos!
 
-## Features
+## What it has rn
 
 - Simple web interface - just paste a YouTube URL and click download
 - Download videos in best quality or smaller file size
+- Real-time download queue with progress tracking
 - View and download previously downloaded videos
-- Beautiful, modern UI that's easy to use
+- Beautiful, responsive UI that's easy to use
+
+## Screenshots
+
+### Dark Mode
+![Dark Mode UI](screenshots/Screenshot%202026-01-17%20at%208.41.41%20AM.png)
+
+### Light Mode  
+![Light Mode UI](screenshots/Screenshot%202026-01-17%20at%208.41.57%20AM.png)
 
 ## Installation
 
@@ -59,9 +68,11 @@ http://localhost:5000
 
 ## Requirements
 
-- Python 3.7+
-- Flask
+- Python 3.12+
+- Node.js 20+
+- Flask 3.0+
 - yt-dlp
+- React 19+ (for frontend)
 
 ## Notes
 

@@ -5,7 +5,10 @@ nixPkgs = ["nodejs_20", "npm-10_x", "python312"]
 cmds = [
   "npm i",
   "(cd frontend && npm install)",
-  "python3 -m pip install -r requirements.txt"
+  "curl -sSL https://bootstrap.pypa.io/get-pip.py -o get-pip.py",
+  "python3 get-pip.py --user",
+  "python3 -m pip install --user -r requirements.txt",
+  "rm get-pip.py"
 ]
 
 [phases.build]
