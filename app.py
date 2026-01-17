@@ -566,7 +566,8 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
                 download_status[job_id]['status'] = 'paused'
                 return False
     
-    client_priority = ['ios', 'android', 'tv', 'web']
+    # Try web client first (most stable), then mobile clients
+    client_priority = ['web', 'ios', 'android', 'tv']
     last_error = None
     
     for client in client_priority:
@@ -592,10 +593,14 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
             ydl_opts = {
                 'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
                 'format': format_selector,
+                'quiet': False,
+                'no_warnings': False,
                 'extractor_args': {
                     'youtube': {
                         'player_client': [client],
                         'player_skip': ['webpage', 'configs'],
+                        # Try to get player response more reliably
+                        'skip': ['dash'] if client == 'android' else [],
                     }
                 },
                 'http_headers': _get_client_headers(client),
@@ -732,24 +737,39 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
             
             # Check for various YouTube blocking patterns
             error_lower = error_msg.lower()
-            is_blocked = (
+            
+            # Check for permanent errors (don't retry)
+            is_permanent = (
+                'private video' in error_lower or
+                'video unavailable' in error_lower or
+                'sign in to confirm your age' in error_lower or
+                'this video is not available' in error_lower
+            )
+            
+            # Check for retryable errors (player response, extraction failures)
+            is_retryable = (
+                'failed to extract' in error_lower or
+                'player response' in error_lower or
+                'unable to extract' in error_lower or
                 '403' in error_msg or 
                 'forbidden' in error_lower or
                 'http error 400' in error_lower or
-                'precondition check failed' in error_lower or
-                'sign in to confirm your age' in error_lower or
-                'video unavailable' in error_lower or
-                'private video' in error_lower or
-                'unable to extract' in error_lower and '403' in error_msg
+                'precondition check failed' in error_lower
             )
             
-            if is_blocked:
-                # Log which client failed for debugging
-                print(f"[DEBUG] Client '{client}' failed for {normalized_url}: {error_msg[:200]}")
-                continue  # Try next client
+            if is_permanent:
+                # Permanent error - don't try other clients
+                logger.warning(f"Permanent error for {normalized_url}: {error_msg[:200]}")
+                break
+            elif is_retryable:
+                # Retryable error - try next client with a small delay
+                logger.info(f"[DEBUG] Client '{client}' failed (retrying with next client): {error_msg[:200]}")
+                time.sleep(1)  # Small delay between client attempts
+                continue
             else:
                 # Other errors - still try next client as fallback
-                print(f"[DEBUG] Client '{client}' error (non-blocking): {error_msg[:200]}")
+                logger.info(f"[DEBUG] Client '{client}' error (non-blocking): {error_msg[:200]}")
+                time.sleep(0.5)  # Small delay
                 continue
                 
         except Exception as e:
@@ -777,6 +797,8 @@ def download_video(job_id, url, quality='best', client_ip=None, format_id=None, 
         user_error = 'This video is private or unavailable. It may have been removed or made private by the uploader.'
     elif 'sign in to confirm your age' in error_lower or 'age-restricted' in error_lower:
         user_error = 'This video is age-restricted and cannot be downloaded. Please try a different video.'
+    elif 'player response' in error_lower or ('failed to extract' in error_lower and 'player' in error_lower):
+        user_error = 'YouTube temporarily blocked access to this video. Please try again in a few minutes, or try a different video. This usually resolves itself quickly.'
     elif '403' in error_msg or 'forbidden' in error_lower:
         user_error = 'Access denied. YouTube may be blocking this video. Please try again later or try a different video.'
     elif 'network' in error_lower or 'connection' in error_lower or 'timeout' in error_lower:
@@ -1131,7 +1153,8 @@ def extract_video_title(job_id, url):
     normalized_url = normalize_youtube_url(url)
     
     # Try multiple clients for title extraction (fallback if one fails)
-    clients = ['ios', 'android', 'web']
+    # Use web client first (most stable), then mobile clients
+    clients = ['web', 'ios', 'android']
     
     for client in clients:
         try:
