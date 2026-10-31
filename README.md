@@ -1,3 +1,5 @@
+> **Licensing update (31 October 2026):** The current policy requires prior written permission for reuse and a separate agreement for AI training. See [LICENSE](LICENSE). Earlier grants remain valid for previously licensed material; [LICENSE.previous](LICENSE.previous) preserves those terms. Any older license descriptions below describe the previous policy. Contact [ei@nsisong.com](mailto:ei@nsisong.com).
+
 # YouTube Video Downloader
 
 I needed a simple web app to download YouTube videos that would be perfect for my wife to downloading our kids' videos!
@@ -201,4 +203,3 @@ http://localhost:5000
 - The application runs on port 5000 by default
 - Make sure you have enough disk space for downloaded videos
 - Use the "Open Folder" button in the app to quickly access your downloaded videos
-
